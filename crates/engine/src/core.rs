@@ -15,7 +15,7 @@ use crate::owner::given::{self, Change, Given};
 use crate::owner::markdown::{self, After};
 use crate::read;
 use crate::trash::{Bin, system_bin};
-use crate::workspace::{self, NoteChange, Owned};
+use crate::workspace::{self, NoteChange, Owned, Workspace};
 use anyhow::Result;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -227,24 +227,31 @@ impl Core {
         changes.into_iter().map(Event::from).collect()
     }
 
-    /// After the workspace was read from scratch. Returns what an owned file leaves out, where
-    /// that is news since the file was read before (`owned_news`), for the files the scan no
-    /// longer finds too, for the caller to say with its `Rescanned`.
-    fn rescanned(&mut self, index: Index) -> Vec<Event> {
-        let before = std::mem::replace(&mut self.index, index).workspace.owned;
+    /// After the workspace was read from scratch (`scanned`): every owned file is read again
+    /// over what it held before, so what it leaves out, and that one can't be read, is news
+    /// only against that. Returns what went wrong reading one (once a version: `Owned::failed`)
+    /// and what an owned file leaves out where that is news (`owned_news`), for the files the
+    /// scan no longer lists too, for the caller to say with its `Rescanned`.
+    ///
+    /// Every file action in the menu rescans (a create, a duplicate, a rename, a move, a
+    /// delete), on the UI thread, so its cost counts. The scan's own reading of each canvas is
+    /// what the canvas owner gives for it, so a canvas whose version that read is taken from it
+    /// rather than parsed again (`Reread::All`); the index is linked once, after the owned
+    /// files are read. What a rescan costs beyond main's before #363 is one more walk of the
+    /// workspace for the owned files and a read of each one's bytes: measured on 2026-11-27
+    /// (PR #416) at about +35 ms of CPU a rescan, within noise from -10 to +72 ms, on 3,300
+    /// notes with or without 100 boards of 30 cards, against 380 to 520 ms for the rescan.
+    fn rescanned(&mut self, scanned: Workspace) -> Vec<Event> {
+        let mut index = Index::unlinked(scanned);
+        let canvases = std::mem::take(&mut index.workspace.owned);
+        self.index.workspace.owned = std::mem::replace(&mut self.index, index).workspace.owned;
         self.changed.clear();
-        if !self.owners.kinds().is_empty() {
-            let _ = self.owned_scan();
-            self.index.relink();
-        }
-        let now = &self.index.workspace.owned;
-        let gone = (before.iter()).filter(|b| owned_at(now, &b.rel).is_none());
-        let gone = gone.map(|b| owned_news(Some(b), None));
-        let found = (now.iter()).map(|f| owned_news(owned_at(&before, &f.rel), Some(f)));
-        let leaves_out: Vec<Event> = gone.chain(found).flatten().collect();
+        let scanned = canvases.into_iter().map(|f| (f.rel.clone(), f)).collect();
+        let (_, events) = self.owned_scan(Reread::All { scanned });
+        self.index.relink();
         let news = self.items.reset(&self.index.workspace);
         self.tell(news);
-        leaves_out
+        events
     }
 
     /// The extensions that own these kinds of file: their files' items and links join the
@@ -256,7 +263,8 @@ impl Core {
         let before = owned.len();
         owned.retain(|f| crate::owner::built_in(&f.rel).is_some());
         let dropped = before != owned.len();
-        let events = self.owned_scan();
+        let (changed, mut events) = self.owned_scan(Reread::Changed);
+        events.extend(changed.into_iter().map(Event::OwnedChanged));
         if dropped || !events.is_empty() {
             self.index.relink();
             let news = self.items.reset(&self.index.workspace);
@@ -268,23 +276,38 @@ impl Core {
 
     /// Find every file of an owned kind again, the built-in owners' included, and read each the
     /// way `owned_changed` does, without telling subscribers (after a scan, which is a reset).
-    /// Returns its events.
-    fn owned_scan(&mut self) -> Vec<Event> {
-        let mut rels = Vec::new();
+    /// The listing (`files::of_kinds`, which reads no hidden folder and no `node_modules`) is
+    /// the one rule for what is gone: a file it held that isn't listed is (`owned_gone`), even
+    /// when its bytes are still on disk. Returns the files whose items or links changed, and
+    /// what went wrong.
+    fn owned_scan(&mut self, reread: Reread) -> (Vec<String>, Vec<Event>) {
         let built_in = crate::owner::BUILT_IN.iter().map(|(x, _)| *x);
-        for x in self
-            .owners
-            .kinds()
-            .iter()
-            .map(|k| k.extension.as_str())
-            .chain(built_in)
-        {
-            rels.extend(files::list(&self.index, x).files);
+        let kinds = self.owners.kinds().iter().map(|k| k.extension.as_str());
+        let kinds: Vec<&str> = kinds.chain(built_in).collect();
+        let found = files::of_kinds(&self.index, &kinds);
+        let listed: std::collections::HashSet<&String> = found.iter().collect();
+        let held = self.index.workspace.owned.iter().map(|f| &f.rel);
+        let unlisted: Vec<String> = held.filter(|r| !listed.contains(r)).cloned().collect();
+        let (mut changed, mut events) = (Vec::new(), Vec::new());
+        for rel in unlisted {
+            events.extend(self.owned_gone(&rel));
+            changed.push(rel);
         }
-        (self.index.workspace.owned).retain(|f| rels.contains(&f.rel));
-        let (changed, mut events) = self.owned_read(&rels);
-        events.extend(changed.into_iter().map(Event::OwnedChanged));
-        events
+        let (read, said) = self.owned_read(&found, reread);
+        changed.extend(read);
+        events.extend(said);
+        (changed, events)
+    }
+
+    /// The owned file at `rel`, which it holds, is gone: its items and links leave the
+    /// workspace and its owner's answers for it are forgotten. Returns what it leaves out, when
+    /// that is news now (`owned_news`).
+    fn owned_gone(&mut self, rel: &str) -> Option<Event> {
+        let owned = &mut self.index.workspace.owned;
+        let i = owned.binary_search_by(|f| f.rel.as_str().cmp(rel)).ok()?;
+        let gone = owned.remove(i);
+        self.owners.forget(rel);
+        owned_news(Some(&gone), None)
     }
 
     /// `file/read` requests for the owners, each with its owner's name: files whose version
@@ -356,7 +379,7 @@ impl Core {
 
     /// Owned files at `rels` may have changed on disk: read them again, and tell subscribers.
     fn owned_changed(&mut self, rels: &[String]) -> Vec<Event> {
-        let (changed, mut events) = self.owned_read(rels);
+        let (changed, mut events) = self.owned_read(rels, Reread::Changed);
         if !changed.is_empty() {
             self.index.relink();
             let news = self.items.changed(&self.index.workspace, &changed);
@@ -368,29 +391,33 @@ impl Core {
 
     /// Bring the owned files at `rels` up to date with the disk: what their owner gave for the
     /// version there, else ask it, keeping what it gave before meanwhile. Returns the files whose
-    /// items or links changed, and what went wrong. Links are not resolved again here. A file
-    /// at a symlink, or behind one, is gone (`owned_bytes`).
-    fn owned_read(&mut self, rels: &[String]) -> (Vec<String>, Vec<Event>) {
+    /// items or links changed, and what went wrong: a version that can't be read is said once
+    /// (`Owned::failed`). Links are not resolved again here. A file at a symlink, or behind
+    /// one, is gone (`owned_bytes`).
+    fn owned_read(&mut self, rels: &[String], mut reread: Reread) -> (Vec<String>, Vec<Event>) {
         let root = self.root().to_path_buf();
         let (mut changed, mut events) = (Vec::new(), Vec::new());
         for rel in rels {
             let Some(owner) = self.owners.owner_of(rel).map(String::from) else {
                 continue;
             };
-            let owned = &mut self.index.workspace.owned;
-            let at = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
+            let held = (self.index.workspace.owned).binary_search_by(|f| f.rel.as_str().cmp(rel));
             let Some(bytes) = owned_bytes(&root, rel) else {
-                if let Ok(i) = at {
-                    let gone = owned.remove(i);
-                    events.extend(owned_news(Some(&gone), None));
-                    self.owners.forget(rel);
+                if held.is_ok() {
+                    events.extend(self.owned_gone(rel));
                     changed.push(rel.clone());
                 }
                 continue;
             };
             let rev = read::rev(&bytes);
-            let i = match at {
-                Ok(i) if owned[i].shows(&rev, self.owners.given(&owner, rel, &rev)) => continue,
+            let owned = &mut self.index.workspace.owned;
+            let i = match held {
+                Ok(i)
+                    if matches!(reread, Reread::Changed)
+                        && owned[i].shows(&rev, self.owners.given(&owner, rel, &rev)) =>
+                {
+                    continue;
+                }
                 Ok(i) => i,
                 Err(i) => {
                     owned.insert(i, Owned::new(rel.clone(), root.join(rel), &owner));
@@ -398,38 +425,31 @@ impl Core {
                     i
                 }
             };
-            let trouble = |message: String| Event::OwnerTrouble {
-                owner: owner.clone(),
-                path: rel.clone(),
-                message,
+            let scanned = match &mut reread {
+                Reread::All { scanned } => scanned.remove(rel),
+                Reread::Changed => None,
             };
-            let given = match self.owners.kept(&owner, rel, &rev, &bytes) {
-                Some(given) => given,
-                None => {
-                    let Ok(text) = String::from_utf8(bytes) else {
-                        events.push(trouble("it isn't UTF-8 text".into()));
-                        continue;
-                    };
-                    match crate::owner::give(&owner, rel, &text) {
-                        Some(Ok(given)) => given,
-                        Some(Err(message)) => {
-                            events.push(trouble(message));
-                            continue;
-                        }
-                        None => {
-                            let read = FileRead {
-                                path: rel.clone(),
-                                rev,
-                                text,
-                            };
-                            self.owners.ask(&owner, read);
-                            continue;
-                        }
-                    }
+            let before = match owner_gave(&mut self.owners, &owner, rel, &rev, bytes, scanned) {
+                Gave::Scanned(file) => std::mem::replace(&mut owned[i], *file),
+                Gave::Given(given) => {
+                    let read = given::read(rel, &given, self.index.workspace.item_settings());
+                    self.index.workspace.owned[i].take(rev, given, read)
                 }
+                Gave::Failed(message) => {
+                    let file = &mut self.index.workspace.owned[i];
+                    if file.failed.as_ref() != Some(&rev) {
+                        file.failed = Some(rev);
+                        let path = rel.clone();
+                        events.push(Event::OwnerTrouble {
+                            owner,
+                            path,
+                            message,
+                        });
+                    }
+                    continue;
+                }
+                Gave::Asked => continue,
             };
-            let read = given::read(rel, &given, self.index.workspace.item_settings());
-            let before = self.index.workspace.owned[i].take(rev, given, read);
             let now = &self.index.workspace.owned[i];
             events.extend(owned_news(Some(&before), Some(now)));
             if changed.last() != Some(rel) {
@@ -850,7 +870,7 @@ impl Core {
             }
             Kind::Folder => match workspace::scan(self.root()) {
                 Ok(scanned) => {
-                    let mut events = self.rescanned(Index::build(scanned));
+                    let mut events = self.rescanned(scanned);
                     events.push(Event::Rescanned);
                     events
                 }
@@ -931,14 +951,14 @@ impl Core {
     }
 
     /// Read the whole workspace again right away (after cold-lava itself moved files around).
-    /// Subscribers get what owned files leave out, if that is news, then `Rescanned`; the next
-    /// `poll` returns the first.
+    /// Subscribers get what went wrong reading an owned file and what one leaves out, if that is
+    /// news, then `Rescanned`; the next `poll` returns the first.
     pub fn rescan_now(&mut self) {
         if let Ok(v) = workspace::scan(&self.index.workspace.root) {
-            let leaves_out = self.rescanned(Index::build(v));
-            self.broadcast(&leaves_out);
+            let reports = self.rescanned(v);
+            self.broadcast(&reports);
             self.broadcast(&[Event::Rescanned]);
-            self.unseen.extend(leaves_out);
+            self.unseen.extend(reports);
         }
     }
 
@@ -961,7 +981,7 @@ impl Core {
         if std::mem::take(&mut self.rescan) {
             self.changed.clear();
             match workspace::scan(self.root()) {
-                Ok(v) => events.extend(self.rescanned(Index::build(v))),
+                Ok(v) => events.extend(self.rescanned(v)),
                 Err(_) => return unseen, // the folder vanished; keep what we had
             }
             events.push(Event::Rescanned);
@@ -1057,8 +1077,8 @@ fn classify(root: &Path, path: &Path) -> Kind {
 
 /// What an owned file leaves out (`Event::OwnedLeavesOut`), when that is news between
 /// `before`, the file as it was, and `now`, as it is (`None`: it wasn't there, or it is
-/// gone). The one place the core decides it, whoever read the file: `owned_read`,
-/// `rescanned`, or the scan as the core opens (which reads a canvas and says nothing).
+/// gone). The one place the core decides it, whoever read the file: `owned_read` (a rescan's
+/// too), or the scan as the core opens (which reads a canvas and says nothing).
 ///
 /// It is news when what the file leaves out changed, `None` once all of it reads or the file
 /// is gone, and when an answer for another version leaves something out, from an owner that
@@ -1077,10 +1097,65 @@ fn owned_news(before: Option<&Owned>, now: Option<&Owned>) -> Option<Event> {
     })
 }
 
-/// The file at `rel` among `owned`, which is in the order of their paths.
-fn owned_at<'a>(owned: &'a [Owned], rel: &str) -> Option<&'a Owned> {
-    let i = owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
-    i.ok().map(|i| &owned[i])
+/// What an owner gave for one version of an owned file, as `owner_gave` found it.
+enum Gave {
+    /// The scan's own reading of that version, taken whole (`Reread::All`).
+    Scanned(Box<Owned>),
+    /// What the owner gave: kept for that version, or read by a built-in owner now.
+    Given(Given),
+    /// The version can't be read, and why.
+    Failed(String),
+    /// Its owner, an extension, was asked; the answer comes to `Core::file_given`.
+    Asked,
+}
+
+/// What `owner` gave for the version `rev` of `rel`, whose bytes are `bytes`: the scan's
+/// reading of that version, else what the owners keep for it, else a built-in owner's reading
+/// of its text, else the owner is asked.
+fn owner_gave(
+    owners: &mut Owners,
+    owner: &str,
+    rel: &str,
+    rev: &str,
+    bytes: Vec<u8>,
+    scanned: Option<Owned>,
+) -> Gave {
+    if let Some(file) = scanned.filter(|f| f.rev.as_deref() == Some(rev)) {
+        return Gave::Scanned(Box::new(file));
+    }
+    if let Some(given) = owners.kept(owner, rel, rev, &bytes) {
+        return Gave::Given(given);
+    }
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Gave::Failed("it isn't UTF-8 text".to_string());
+    };
+    match crate::owner::give(owner, rel, &text) {
+        Some(Ok(given)) => Gave::Given(given),
+        Some(Err(message)) => Gave::Failed(message),
+        None => {
+            let read = FileRead {
+                path: rel.to_string(),
+                rev: rev.to_string(),
+                text,
+            };
+            owners.ask(owner, read);
+            Gave::Asked
+        }
+    }
+}
+
+/// Which owned files `Core::owned_read` reads again.
+enum Reread {
+    /// Those that don't show what their owner gave for the version on disk.
+    Changed,
+    /// Every one, as a rescan reads every note: the workspace's settings (the Tasks plugin's
+    /// statuses) may read a version a file already shows otherwise. `scanned` is the rescan's
+    /// own reading of the canvases, by path, under those settings (`workspace::scan`): what the
+    /// canvas owner gives for a version, so a file whose version on disk it read is taken from
+    /// it instead of parsed again, and is news against what the file held all the same.
+    All {
+        scanned: std::collections::HashMap<String, Owned>,
+    },
 }
 
 /// The bytes of the owned file at `rel`, read as the scan reads files: none when it is gone,

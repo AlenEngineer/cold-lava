@@ -18,7 +18,8 @@ use walkdir::WalkDir;
 
 /// The index's resolver: where a link leads among the notes (`resolve`) or the files other
 /// owners read (`resolve_owned`, `Eruptions.csv`). Same rules and tables as `Files`, which also
-/// sees attachments, so both give one answer.
+/// sees attachments, so both give one answer. The default finds nothing.
+#[derive(Default)]
 pub struct Resolver {
     notes: Table,
     owned: Table,
@@ -46,6 +47,7 @@ impl Resolver {
 
 /// Files by workspace path and by name, the shallowest of a name winning (of several as deep,
 /// the first by path): the table Obsidian's rules look a link up in.
+#[derive(Default)]
 struct Table {
     by_path: HashMap<String, usize>,
     by_name: HashMap<String, usize>,
@@ -272,6 +274,11 @@ pub struct Files {
 impl Files {
     /// The workspace's notes, and its other files read from disk.
     pub fn of_workspace(ix: &Index) -> Files {
+        Files::new(Files::rels_of_workspace(ix))
+    }
+
+    /// The paths `of_workspace` holds, without the tables links are looked up in.
+    pub(crate) fn rels_of_workspace(ix: &Index) -> Vec<String> {
         let mut rels: Vec<String> = ix
             .workspace
             .notes
@@ -289,7 +296,7 @@ impl Files {
                 rels.push(rel.to_string_lossy().replace('\\', "/"));
             }
         }
-        Files::new(rels)
+        rels
     }
 
     pub(crate) fn new(rels: Vec<String>) -> Files {

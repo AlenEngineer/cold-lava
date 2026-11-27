@@ -556,13 +556,26 @@ impl Trash {
 
 /// `workspace/files`: the workspace's files that end in `.<extension>`, outside hidden folders.
 pub fn list(index: &Index, extension: &str) -> Listed {
-    let want = extension.trim_start_matches('.').to_ascii_lowercase();
-    let all = crate::resolver::Files::of_workspace(index).rels;
-    let mut files: Vec<String> = (all.into_iter())
-        .filter(|f| extension_of(f).as_deref() == Some(want.as_str()))
-        .collect();
-    files.sort();
-    Listed { files }
+    Listed {
+        files: of_kinds(index, &[extension]),
+    }
+}
+
+/// The workspace's files of each kind (by its extension) as `list` gives them, each kind's
+/// after the one before it, from one walk of the workspace.
+pub(crate) fn of_kinds(index: &Index, extensions: &[&str]) -> Vec<String> {
+    let all = crate::resolver::Files::rels_of_workspace(index);
+    let mut out = Vec::new();
+    for x in extensions {
+        let want = x.trim_start_matches('.').to_ascii_lowercase();
+        let mut files: Vec<String> = (all.iter())
+            .filter(|f| extension_of(f).as_deref() == Some(want.as_str()))
+            .cloned()
+            .collect();
+        files.sort();
+        out.extend(files);
+    }
+    out
 }
 
 #[cfg(test)]

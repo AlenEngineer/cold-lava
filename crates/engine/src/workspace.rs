@@ -78,6 +78,10 @@ pub struct Owned {
     /// What didn't read in what the owner gave for `rev` (`given::Read::problems`): reported
     /// wherever the file is read, a canvas read by the scan included.
     pub problems: Vec<crate::problem::Problem>,
+    /// The version on disk that couldn't be read at all, once that was said
+    /// (`core::Event::OwnerTrouble`): it is said once a version, so a rescan doesn't say it
+    /// again. Reading a version clears it.
+    pub failed: Option<String>,
 }
 
 impl Owned {
@@ -93,6 +97,7 @@ impl Owned {
             links: Vec::new(),
             given: Default::default(),
             problems: Vec::new(),
+            failed: None,
         }
     }
 
