@@ -137,7 +137,7 @@ impl std::fmt::Display for Region {
             bottom,
             right,
         } = self;
-        write!(f, "within rows {top}–{bottom}, columns {left}–{right}")
+        write!(f, "rows {top}–{bottom}, columns {left}–{right}")
     }
 }
 
@@ -615,7 +615,7 @@ impl Session {
     fn wait_for_in(&mut self, at: &Region, text: &str, timeout: Duration) -> Option<String> {
         (!self.until(timeout, |s| s.shows_in(at, text))).then(|| {
             format!(
-                "waited {} for {text:?} {at}{}",
+                "waited {} for {text:?} within {at}{}",
                 secs(timeout),
                 self.exited()
             )
@@ -820,7 +820,8 @@ pub fn run(
             }),
             Action::ExpectIn { at, text } => {
                 s.settle();
-                (!s.shows_in(at, text)).then(|| format!("expected {text:?} {at}{}", s.exited()))
+                (!s.shows_in(at, text))
+                    .then(|| format!("expected {text:?} within {at}{}", s.exited()))
             }
             Action::WaitForIn { at, text, timeout } => s.wait_for_in(at, text, *timeout),
         };
