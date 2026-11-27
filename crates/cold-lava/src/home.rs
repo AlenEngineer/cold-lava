@@ -5881,17 +5881,13 @@ impl Home {
             ),
         ]);
         f.render_widget(Paragraph::new(typed), inner);
-        let rows = Rect {
-            y: inner.y + 2,
-            height: inner.height.saturating_sub(2),
-            ..inner
-        };
         let list = pick_list::List {
             len: hits.len() + files.len() + create as usize,
             sel: *sel,
             none: " no notes match",
             measure: pick_list::Measure::Chars,
         };
+        let rows = pick_list::under_query(inner);
         pick_list::draw(f.buffer_mut(), rows, list, |i| {
             if i == hits.len() + files.len() {
                 let label = format!(" + Create note \"{}\"", query.trim());
@@ -5961,17 +5957,16 @@ impl Home {
                 matches
             )
         };
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(" ▸ ", Style::new().fg(HIT)),
-                Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
-                Span::styled(summary, Style::new().fg(MUTED)),
-            ]),
-            Line::raw(""),
-        ];
-        let rows = inner.height.saturating_sub(2) as usize;
+        let typed = Line::from(vec![
+            Span::styled(" ▸ ", Style::new().fg(HIT)),
+            Span::styled(format!("{query}▏"), Style::new().fg(NOTE)),
+            Span::styled(summary, Style::new().fg(MUTED)),
+        ]);
+        f.render_widget(Paragraph::new(typed), inner);
+        let list = pick_list::under_query(inner);
+        let (rows, width) = (list.height as usize, list.width as usize);
         let start = pick_list::first(*sel, rows);
-        let width = inner.width as usize;
+        let mut lines = Vec::new();
         for (i, row) in self.result_rows.iter().enumerate().skip(start).take(rows) {
             let selected = i == *sel;
             match *row {
@@ -6027,7 +6022,7 @@ impl Home {
                 }
             }
         }
-        f.render_widget(Paragraph::new(lines), inner);
+        f.render_widget(Paragraph::new(lines), list);
     }
 
     fn draw_workspaces(&self, f: &mut Frame, area: Rect) {

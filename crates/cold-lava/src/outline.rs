@@ -80,17 +80,13 @@ impl Outline {
         ]);
         f.render_widget(Paragraph::new(typed), inner);
         let top = headings.iter().map(|h| h.level).min().unwrap_or(1);
-        let rows = Rect {
-            y: inner.y + 2,
-            height: inner.height.saturating_sub(2),
-            ..inner
-        };
         let list = pick_list::List {
             len: hits.len(),
             sel: self.sel,
             none: " no headings match",
             measure: Measure::Columns,
         };
+        let rows = pick_list::under_query(inner);
         pick_list::draw(f.buffer_mut(), rows, list, |row| {
             let (i, m) = &hits[row];
             let h = &headings[*i];

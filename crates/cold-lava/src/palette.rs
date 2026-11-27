@@ -81,17 +81,13 @@ impl Palette {
             ),
         ]);
         f.render_widget(Paragraph::new(typed), inner);
-        let rows = Rect {
-            y: inner.y + 2,
-            height: inner.height.saturating_sub(2),
-            ..inner
-        };
         let list = pick_list::List {
             len: hits.len(),
             sel: self.sel,
             none: " no commands match",
             measure: Measure::Chars,
         };
+        let rows = pick_list::under_query(inner);
         pick_list::draw(f.buffer_mut(), rows, list, |i| {
             let (m, plain) = (&hits[i], Style::new().fg(NOTE));
             let c = m.command;

@@ -154,6 +154,17 @@ pub fn first(sel: usize, height: usize) -> usize {
     sel.saturating_sub(height.saturating_sub(1))
 }
 
+/// Where a picker's rows go inside its popup: under the query line on top and the blank line
+/// after it.
+pub fn under_query(inner: Rect) -> Rect {
+    let skip = inner.height.min(2);
+    Rect {
+        y: inner.y + skip,
+        height: inner.height - skip,
+        ..inner
+    }
+}
+
 /// `row` as a line `width` columns wide, chosen or not.
 fn line(row: Row<'_>, chosen: bool, width: usize, measure: Measure) -> Line<'_> {
     let mut spans: Vec<Span> = (row.text.into_iter())
@@ -317,6 +328,13 @@ mod tests {
             [0, 1, 2].map(|y| text(&buf, y)),
             ["row 0 ", "row 1 ", "      "]
         );
+    }
+
+    #[test]
+    fn a_pickers_rows_go_under_its_query_line_and_a_blank_one() {
+        assert_eq!(under_query(Rect::new(3, 4, 20, 10)), Rect::new(3, 6, 20, 8));
+        let short = Rect::new(3, 4, 20, 1);
+        assert_eq!(under_query(short), Rect::new(3, 5, 20, 0), "no room");
     }
 
     #[test]
