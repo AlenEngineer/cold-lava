@@ -18,7 +18,8 @@
 //!   change from being counted twice. `rescan_now` still leaves its reset in the queue without
 //!   an event for `poll` and without `has_unseen` (unless a board's report is news, below), so
 //!   whoever calls it takes the news at once, for its subscribers to be up to date.
-//! - What a rescan finds an owned file leaves out (`OwnedLeavesOut`) is said once, just before
+//! - What a rescan finds an owned file leaves out (`OwnedLeavesOut`), and which it couldn't
+//!   read (`OwnerTrouble`, #363), is said once, just before
 //!   its `Rescanned`, to `poll` and to a channel alike: in the poll that rescans when the
 //!   watcher reported a folder, and inside the call for a folder's delete or restore (#338).
 //!   `rescan_now` says it to a channel at the call and to `poll` at the next.
@@ -1622,6 +1623,34 @@ fn a_rescan_now_says_what_a_board_leaves_out_at_the_call_and_at_the_next_poll() 
     let batch = h.deliver();
     assert_eq!(batch.events, [report], "poll, at the next");
     assert_eq!(batch.channel, []);
+    assert!(h.deliver().is_empty(), "said once");
+}
+
+/// #363. A rescan reads every owned file again and says which it couldn't read, before its
+/// `Rescanned`, to `poll` and to a channel alike, once: a board that isn't JSON any more and an
+/// extension's file that isn't UTF-8 text. What each showed stays, as when the watcher reports
+/// the file alone.
+#[test]
+fn a_rescan_says_which_owned_files_it_could_not_read() {
+    let mut h = workspace("rescan-trouble");
+    h.follow("agenda", tasks());
+    h.write("Board.canvas", "{");
+    std::fs::write(h.dir.join("Reading.lines"), [0xff, 0xfe]).unwrap();
+    h.saw("");
+    let batch = h.deliver();
+    let trouble = |e: &Event| match e {
+        Event::OwnerTrouble { owner, path, .. } => Some((owner.clone(), path.clone())),
+        _ => None,
+    };
+    let said: Vec<(String, String)> = batch.events.iter().filter_map(trouble).collect();
+    let canvas = crate::owner::canvas::OWNER;
+    let want = [(OWNER, "Reading.lines"), (canvas, "Board.canvas")];
+    assert_eq!(said, want.map(|(o, p)| (o.to_string(), p.to_string())));
+    assert_eq!(batch.events.len(), 3, "{:?}", batch.events);
+    assert_eq!(batch.events.last(), Some(&Event::Rescanned));
+    assert_eq!(batch.channel, batch.events);
+    assert_eq!(h.count("agenda", "Check the seismograph"), 1);
+    assert_eq!(h.count("agenda", "Read the report"), 1);
     assert!(h.deliver().is_empty(), "said once");
 }
 
