@@ -8,6 +8,7 @@
 //! out is checked.
 
 mod os_rename;
+mod replace;
 
 use std::fmt;
 use std::io::{self, Write as _};
@@ -18,9 +19,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub enum WriteError {
     /// The file's content isn't what the caller read earlier: someone else changed it.
     Changed(PathBuf),
-    /// Another write landed at the path (the first) while this one was under way, and what
-    /// was taken out of the file couldn't be put back: it is kept in the second path, a
-    /// hidden file beside it. Read the file again: this write may or may not be in it.
+    /// Another write landed at the path (the first) while this one was under way, and a text
+    /// taken out of the file couldn't be put back: it is kept in the second path, a hidden
+    /// file beside it named `.Name.cold-lava-kept-…` (`replace::kept_name`). It is never the
+    /// caller's own old text or this write's. Read the file again: this write may or may not
+    /// be in it. Not "read again" alone: a text now sits outside the file (gateway `kept`).
     Kept(PathBuf, PathBuf),
     /// Creating a file where something already is (`taken`).
     Exists(PathBuf),
@@ -37,12 +40,7 @@ impl fmt::Display for WriteError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             WriteError::Changed(p) => write!(f, "{} changed since it was read", p.display()),
-            WriteError::Kept(p, kept) => write!(
-                f,
-                "{} changed while it was being written: the text taken out of it is kept in {}",
-                p.display(),
-                kept.display()
-            ),
+            WriteError::Kept(p, kept) => f.write_str(&kept_words(p.display(), kept.display())),
             WriteError::Exists(p) => write!(f, "{} already exists", p.display()),
             WriteError::NotAFile(p) => f.write_str(&not_a_file(p.display())),
             WriteError::Link(p) => write!(
@@ -60,6 +58,11 @@ impl std::error::Error for WriteError {}
 /// `NotAFile` in its one wording, naming the link as the caller does.
 pub(crate) fn not_a_file(name: impl fmt::Display) -> String {
     format!("{name} is a symbolic link that doesn't lead to a file")
+}
+
+/// `Kept` in its one wording, naming the file and where its text is kept as the caller does.
+pub(crate) fn kept_words(name: impl fmt::Display, kept: impl fmt::Display) -> String {
+    format!("{name} changed while it was being written: the text taken out of it is kept in {kept}")
 }
 
 fn io_err(path: &Path) -> impl Fn(io::Error) -> WriteError + '_ {
@@ -109,14 +112,11 @@ fn staged(path: &Path, file: &Path, bytes: &[u8]) -> Result<PathBuf, WriteError>
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(io_err(dir))?;
-    let (new, mut f) = loop {
-        let new = beside(file);
-        match std::fs::File::create_new(&new) {
-            Ok(f) => break (new, f),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(io_err(path)(e)),
-        }
-    };
+    let new = reserved(file, beside).map_err(io_err(path))?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&new)
+        .map_err(|e| unstaged(&new, io_err(path)(e)))?;
     let written = f.write_all(bytes).and_then(|()| f.sync_all());
     written.map_err(|e| unstaged(&new, io_err(path)(e)))?;
     if let Ok(meta) = std::fs::metadata(file) {
@@ -125,9 +125,21 @@ fn staged(path: &Path, file: &Path, bytes: &[u8]) -> Result<PathBuf, WriteError>
     Ok(new)
 }
 
-/// A name beside `file` that this process hasn't used: hidden, so file watchers (ours and
-/// Obsidian's) ignore it, and new each time, so a text kept there (`Kept`) is never written
-/// over by a later write.
+/// A new, empty file beside `file`, at the first name `name` gives where nothing is
+/// (`create_new`): a name no other file has, so only this write ever writes over it.
+fn reserved(file: &Path, name: fn(&Path) -> PathBuf) -> io::Result<PathBuf> {
+    loop {
+        let at = name(file);
+        match std::fs::File::create_new(&at) {
+            Ok(_) => return Ok(at),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// A staged write's name beside `file`: hidden, so file watchers (ours and Obsidian's) ignore
+/// it, and new each time this process asks (`reserved` makes sure no one else has it).
 fn beside(file: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -142,10 +154,12 @@ fn unstaged(new: &Path, e: WriteError) -> WriteError {
 }
 
 /// Replace the file at `path` only if it still contains `expected` (what the caller read
-/// before). Outside the engine, `read::Seen::replace` is the way. It never follows a symlink: a
-/// link at `path` is refused (`Link`), and one swapped in after that check is taken out by the
-/// swap, never written through. Every path the engine found by its scan, or the gateway let
-/// through, is a file (`workspace::first_link`), so this is the write for all of them.
+/// before), never over a write that lands meanwhile (`replace::checked`). Outside the engine,
+/// `read::Seen::replace` is the way. It never follows a symlink: a link at `path` is refused
+/// (`Link`), and one swapped in after that check is compared by what it leads to, then taken
+/// out by the swap as a link, never written through. Every path the engine found by its scan,
+/// or the gateway let through, is a file (`workspace::first_link`), so this is the write for
+/// all of them.
 pub(crate) fn replace(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
     refuse_link(path)?;
     replace_at(path, path, expected, bytes)
@@ -174,98 +188,7 @@ pub(crate) fn replace_through_link(
 }
 
 fn replace_at(path: &Path, file: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
-    replace_with(path, file, expected, bytes, || {})
-}
-
-/// Compare `file` with `expected`, then put `bytes` in so that another program's write landing
-/// after the compare is never replaced unseen (#395). The new text is staged, then swapped
-/// with the file in one step (`os_rename::exchange`), so the path always holds a file, and
-/// what came out is compared again: unless it is still `expected`, another write landed after
-/// the compare, and it goes back in (`put_back`). Where the file system can't swap, the file is
-/// moved aside instead (`aside`). Left open, as on any POSIX system: a program that opened the
-/// file before the swap and writes into it after what came out was compared.
-fn replace_with(
-    path: &Path,
-    file: &Path,
-    expected: &[u8],
-    bytes: &[u8],
-    between: impl FnOnce(),
-) -> Result<(), WriteError> {
-    let now = std::fs::read(file).map_err(io_err(path))?;
-    if now != expected {
-        return Err(WriteError::Changed(path.to_path_buf()));
-    }
-    let new = staged(path, file, bytes)?;
-    between();
-    match os_rename::exchange(&new, file) {
-        Ok(()) => settle(path, file, &new, expected, bytes),
-        Err(e) if e.kind() == io::ErrorKind::Unsupported => aside(path, file, &new, expected),
-        Err(e) => Err(unstaged(&new, gone(path, e))),
-    }
-}
-
-/// After the swap, `out` holds what `file` held at that moment. The write is done when that is
-/// what the caller read; anything else is another write's, and goes back.
-fn settle(
-    path: &Path,
-    file: &Path,
-    out: &Path,
-    expected: &[u8],
-    bytes: &[u8],
-) -> Result<(), WriteError> {
-    if std::fs::read(out).is_ok_and(|was| was == expected) {
-        let _ = std::fs::remove_file(out);
-        return Ok(());
-    }
-    put_back(path, file, out, bytes)
-}
-
-/// Swap another write's text in `out` back into `file`, and refuse (`Changed`). What comes out
-/// is removed only when it is this write's own `bytes`; anything else (a third write, landed in
-/// the moment between) stays in `out` and is named (`Kept`).
-fn put_back(path: &Path, file: &Path, out: &Path, bytes: &[u8]) -> Result<(), WriteError> {
-    let back = os_rename::exchange(out, file).is_ok();
-    if back && std::fs::read(out).is_ok_and(|now| now == bytes) {
-        let _ = std::fs::remove_file(out);
-        return Err(WriteError::Changed(path.to_path_buf()));
-    }
-    Err(WriteError::Kept(path.to_path_buf(), out.to_path_buf()))
-}
-
-/// `replace_with` where the file system can't swap (NFS, most FUSE mounts): the file is moved
-/// aside, so a write after that can't land in it unseen, and compared there; the new text goes
-/// in only where nothing is (`os_rename::no_replace`). The path holds no file for that moment.
-/// Only a text that is `expected` is removed: another write's goes back, or is kept (`Kept`)
-/// when something is at the path by then.
-fn aside(path: &Path, file: &Path, new: &Path, expected: &[u8]) -> Result<(), WriteError> {
-    let old = beside(file);
-    os_rename::no_replace(file, &old).map_err(|e| unstaged(new, gone(path, e)))?;
-    let refused = match std::fs::read(&old).is_ok_and(|was| was == expected) {
-        true => match os_rename::no_replace(new, file) {
-            Ok(()) => {
-                let _ = std::fs::remove_file(&old);
-                return Ok(());
-            }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                WriteError::Changed(path.to_path_buf())
-            }
-            Err(e) => WriteError::Io(path.to_path_buf(), e),
-        },
-        false => WriteError::Changed(path.to_path_buf()),
-    };
-    let refused = unstaged(new, refused);
-    match os_rename::no_replace(&old, file) {
-        Ok(()) => Err(refused),
-        Err(_) => Err(WriteError::Kept(path.to_path_buf(), old)),
-    }
-}
-
-/// `Changed` when the file is no longer there, as a write that removed it changed it.
-fn gone(path: &Path, e: io::Error) -> WriteError {
-    match e.kind() {
-        io::ErrorKind::NotFound => WriteError::Changed(path.to_path_buf()),
-        _ => WriteError::Io(path.to_path_buf(), e),
-    }
+    replace::checked(path, file, expected, bytes, || {})
 }
 
 /// Whether something is at `path`: a file, a folder or a symlink, a link to nothing included.
@@ -375,6 +298,7 @@ fn same_entry(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::replace::{aside, checked as replace_with, keep, put_back};
     use super::*;
 
     fn dir(name: &str) -> PathBuf {
@@ -480,21 +404,50 @@ mod tests {
     }
 
     /// A third write lands on the new text in the moment before the other write's text goes
-    /// back: the other text is put back, and the third, which is neither, stays beside the file
-    /// and is named.
+    /// back: the other text is put back, and the third, which is neither, is kept beside the
+    /// file under a kept text's name (never a staged write's) and named.
     #[test]
     fn a_text_that_cant_be_put_back_is_kept_and_named() {
         let d = dir("put-back");
         let p = d.join("N.md");
         std::fs::write(&p, "third").unwrap();
         let out = staged(&p, &p, b"theirs").unwrap();
-        let kept = put_back(&p, &p, &out, b"ours");
+        let kept = put_back(&p, &p, &out, b"v1", b"ours");
+        let Err(WriteError::Kept(at, beside)) = &kept else {
+            panic!("{kept:?}");
+        };
+        assert_eq!(*at, p);
+        let name = beside.file_name().unwrap().to_string_lossy().into_owned();
         assert!(
-            matches!(&kept, Err(WriteError::Kept(at, beside)) if *at == p && *beside == out),
-            "{kept:?}"
+            name.starts_with(".N.cold-lava-kept-") && name.ends_with(".md"),
+            "{name}"
         );
         assert_eq!(std::fs::read(&p).unwrap(), b"theirs");
-        assert_eq!(std::fs::read(&out).unwrap(), b"third");
+        assert_eq!(std::fs::read(beside).unwrap(), b"third");
+        assert_eq!(
+            files(&d),
+            [name.as_str(), "N.md"],
+            "the staged name is gone"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// What a write took out and can't put back is removed when it is only the caller's old
+    /// text or this write's own: nobody's text is lost, so it is `Changed`, not `Kept`.
+    #[test]
+    fn only_another_programs_text_is_kept() {
+        let d = dir("keep");
+        let p = d.join("N.md");
+        std::fs::write(&p, "now").unwrap();
+        for own in ["v1", "ours"] {
+            let out = staged(&p, &p, own.as_bytes()).unwrap();
+            let refused = keep(&p, &p, &out, &[b"ours".as_slice(), b"v1"]);
+            assert!(
+                matches!(&refused, WriteError::Changed(at) if *at == p),
+                "{own}: {refused:?}"
+            );
+            assert_eq!(files(&d), ["N.md"], "{own}");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -682,8 +635,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// A link swapped in at the path after `replace` checked it: the rename replaces the link,
-    /// and the file it leads to keeps its bytes.
+    /// A link swapped in at the path after `replace` checked it: it is compared by what it
+    /// leads to, then swapped out as a link and removed, and the file it leads to keeps its
+    /// bytes.
     #[cfg(unix)]
     #[test]
     fn a_link_swapped_in_after_the_check_is_replaced_and_never_followed() {

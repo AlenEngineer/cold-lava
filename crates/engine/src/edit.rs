@@ -22,7 +22,7 @@ use crate::matcher::{self, Typed};
 use crate::sources::{On, Source};
 use crate::style::{Lazy, Style, TaskFields};
 use crate::types::Value;
-use crate::{daily, workspace, write};
+use crate::{daily, workspace};
 
 /// Why an edit wasn't made. Nothing was written.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,6 +34,9 @@ pub enum EditError {
     Refused(String),
     /// The note wouldn't read back as asked.
     ReadBack(String),
+    /// Another program wrote the note while this edit was written, and a text taken out of it
+    /// is kept beside it (`write::WriteError::Kept`): the words name where.
+    Kept(String),
     /// A block id would be lost, moved or made (`items::anchors`): words for the person, which
     /// say why and what to do. It is a `read-back` on the wire.
     Anchor(String),
@@ -44,6 +47,7 @@ impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             EditError::Changed(m)
+            | EditError::Kept(m)
             | EditError::Refused(m)
             | EditError::Anchor(m)
             | EditError::Io(m) => f.write_str(m),
@@ -89,10 +93,7 @@ pub fn set_field(root: &Path, note: &str, req: &SetField, dry_run: bool) -> Resu
     let set = plan(note, &text, &Settings::load(root), &style, req)?;
     if set.changed && !dry_run {
         let seen = crate::read::Seen::kept(&path, text.as_bytes());
-        seen.replace(set.text.as_bytes()).map_err(|e| match e {
-            write::WriteError::Changed(_) => Changed(e.to_string()),
-            e => EditError::Io(e.to_string()),
-        })?;
+        seen.replace(set.text.as_bytes()).map_err(EditError::from)?;
     }
     Ok(set)
 }

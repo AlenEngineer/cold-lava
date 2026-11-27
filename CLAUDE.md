@@ -140,7 +140,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `write.rs`: the only way to write to a workspace: `write_atomic`, `replace` (refused if the file
   changed since it was read; the engine's only, `Seen::replace` outside it), `create`,
   `move_file`. `replace` never follows a symlink: a link at the path is refused (`Link`), and
-  one swapped in after that check is replaced by the rename; a folder swapped in on the way
+  one swapped in after that check is compared by what it leads to, then swapped out as a link
+  and removed, never written through; a folder swapped in on the way
   is still followed (#366). It is every write over a file the engine found by its scan or
   the gateway let through. `replace_through_link` (`Seen::replace_through_link`) is the
   exception, by name: the user's own save of a file they opened by its path (the board's
@@ -153,11 +154,15 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   merge's undo. `may_move` is the one test of whether a move may go ahead: nothing is at
   the new path, or it differs only in case and is the very entry that moves (#388);
   `move_file` and a rename's checks ask it. No other program's write that lands while one of
-  these is under way is replaced (#395, #230): `replace` swaps its new file in
-  (`write/os_rename.rs`, `exchange`: renameat2 or renameatx_np) and compares what came out,
-  putting another write's text back and refusing (`Changed`), or keeping a text it can't put
-  back beside the file and naming it (`Kept`); where the file system can't swap, the file is
-  moved aside and compared there. `create` and `move_file` rename with `no_replace`, refused
+  these is under way is replaced (#395, #230): `replace` (`write/replace.rs`) swaps its new
+  file in (`write/os_rename.rs`, `exchange`: renameat2 or renameatx_np) and compares what
+  came out, putting another write's text back and refusing (`Changed`), or keeping a text it
+  can't put back beside the file as `.Name.cold-lava-kept-SECONDS-N.ext` and naming it
+  (`Kept`, the gateway's `kept`; where the user sees kept texts is #427); where the file
+  system can't swap, the file is moved aside by one rename onto a name it reserved and
+  compared there. A text the engine took out is removed only when it is the caller's old
+  text or the write's own. Every caller classifies a `WriteError` through `Reason::of`
+  (`EditError::from` for an edit), never by matching its variants. `create` and `move_file` rename with `no_replace`, refused
   when something is there by then. What is left open is a program that opened the file
   before the swap and writes into it after the compare. Never call `std::fs::write` on
   workspace files.

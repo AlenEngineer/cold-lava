@@ -797,7 +797,11 @@ fn run() -> Result<()> {
                     }
                 }
                 (Err(e), true) => {
-                    let changed = e.downcast_ref::<tasks::Changed>().is_some();
+                    let changed = e.downcast_ref::<tasks::Changed>().is_some()
+                        || matches!(
+                            e.downcast_ref::<edit::EditError>(),
+                            Some(edit::EditError::Changed(_))
+                        );
                     say::json_line(
                         &serde_json::json!({"error": format!("{e:#}"), "changed": changed}),
                     )?;
@@ -858,6 +862,7 @@ fn run() -> Result<()> {
                         })
                         .map_err(|e| match e.reason {
                             gateway::Reason::Changed => edit::EditError::Changed(e.message),
+                            gateway::Reason::Kept => edit::EditError::Kept(e.message),
                             _ => edit::EditError::Refused(e.message),
                         })
                 }

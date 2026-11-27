@@ -194,13 +194,19 @@ pub enum Reason {
     NoWorkspace,
     /// `workspace/create` at a path where a file is already.
     Exists,
+    /// Another program wrote the file while this write was under way, and a text taken out of
+    /// it couldn't be put back: it is kept in a hidden file beside it, which the message names
+    /// (`write::WriteError::Kept`). Read the file again, and tell the user where that text is.
+    Kept,
 }
 
 impl Reason {
-    /// The reason a write refused or failed with, as its kind says.
+    /// The reason a write refused or failed with, as its kind says: the one reading of a
+    /// `WriteError` every caller asks (`EditError::from` too), never its variants matched.
     pub fn of(e: &write::WriteError) -> Reason {
         match e {
-            write::WriteError::Changed(_) | write::WriteError::Kept(..) => Reason::Changed,
+            write::WriteError::Changed(_) => Reason::Changed,
+            write::WriteError::Kept(..) => Reason::Kept,
             write::WriteError::Exists(_) => Reason::Exists,
             write::WriteError::NotAFile(_) | write::WriteError::Link(_) => Reason::Refused,
             write::WriteError::Io(..) => Reason::Io,
@@ -223,10 +229,23 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// An edit's write refused or failed, read as `Reason::of` reads it, in the write's words.
+impl From<write::WriteError> for EditError {
+    fn from(e: write::WriteError) -> EditError {
+        let words = e.to_string();
+        match Reason::of(&e) {
+            Reason::Changed => EditError::Changed(words),
+            Reason::Kept => EditError::Kept(words),
+            _ => EditError::Io(words),
+        }
+    }
+}
+
 impl From<EditError> for Error {
     fn from(e: EditError) -> Error {
         let reason = match e {
             EditError::Changed(_) => Reason::Changed,
+            EditError::Kept(_) => Reason::Kept,
             EditError::Refused(_) => Reason::Refused,
             EditError::ReadBack(_) | EditError::Anchor(_) => Reason::ReadBack,
             EditError::Io(_) => Reason::Io,
@@ -1668,6 +1687,8 @@ fields.text = { rest = true }
             (Reason::Io, "io"),
             (Reason::Forbidden, "forbidden"),
             (Reason::NoWorkspace, "no-workspace"),
+            (Reason::Exists, "exists"),
+            (Reason::Kept, "kept"),
         ];
         for (reason, name) in reasons {
             wire(
@@ -1717,7 +1738,13 @@ fields.text = { rest = true }
             Reason::Changed
         );
         let kept = write::WriteError::Kept(at(), PathBuf::from(".Lava.md.kept"));
-        assert_eq!(Reason::of(&kept), Reason::Changed);
+        assert_eq!(Reason::of(&kept), Reason::Kept);
+        let edit = EditError::from(write::WriteError::Kept(
+            at(),
+            PathBuf::from(".Lava.md.kept"),
+        ));
+        assert!(matches!(&edit, EditError::Kept(words) if words.contains(".Lava.md.kept")));
+        assert_eq!(Error::from(edit).reason, Reason::Kept);
         assert_eq!(Reason::of(&write::WriteError::Exists(at())), Reason::Exists);
         let link = write::WriteError::NotAFile(at());
         assert_eq!(Reason::of(&link), Reason::Refused);

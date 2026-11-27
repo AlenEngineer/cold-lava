@@ -206,7 +206,11 @@ then a query and a view, not a parser of its own.
   a toggle on no task, an anchor on an item with no place for one), `read-back` (the note wouldn't read back as asked; nothing was
   written), `io`, `forbidden` (the manifest doesn't ask for the permission), `no-workspace` and
   `exists` (`workspace/create`, `workspace/create-folder` or `workspace/restore` at a path
-  where something is).
+  where something is), and `kept`: another program wrote the file while this write was under
+  way, and a text taken out of it couldn't be put back, so it is kept in a hidden file beside
+  it (`.Name.cold-lava-kept-SECONDS-N.ext`), which the message names. Read the file again,
+  as for `changed`, and show the message: it is the only place that says where the text is
+  (#427 is where kept texts become visible).
 - **Edits are made during the call, not queued.** An extension's reads and edits both need an
   answer (the new `rev`, or why it was refused), and a later edit in the same call must see the
   first one, so the core edits and reads the note again before `edit_item` returns. An item of

@@ -11,9 +11,10 @@ use std::ops::Range;
 use std::path::Path;
 
 use super::{Definition, VERSION, WORKSPACE_FILE};
+use crate::gateway::Reason;
 use crate::problem::Problem;
 use crate::read::Seen;
-use crate::write::{self, WriteError};
+use crate::write;
 
 /// `d` as a `[[shapes]]` block with id `id`, ending in a line break.
 pub fn block(id: &str, d: &Definition) -> String {
@@ -375,10 +376,12 @@ pub fn save(
     };
     match written {
         Ok(()) => Saved::Written(new.into_bytes()),
-        Err(WriteError::Changed(_) | WriteError::Exists(_)) => Saved::Refused(format!(
-            "{WORKSPACE_FILE} changed since it was read: not saved; your shape is still here, and reopening the editor reads the file again"
-        )),
-        Err(e) => Saved::Refused(e.to_string()),
+        Err(e) => match Reason::of(&e) {
+            Reason::Changed | Reason::Exists => Saved::Refused(format!(
+                "{WORKSPACE_FILE} changed since it was read: not saved; your shape is still here, and reopening the editor reads the file again"
+            )),
+            _ => Saved::Refused(e.to_string()),
+        },
     }
 }
 

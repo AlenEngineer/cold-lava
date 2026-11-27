@@ -245,13 +245,15 @@ fn io(rel: &str) -> impl Fn(std::io::Error) -> Error + '_ {
     move |e| Error::new(Reason::Io, format!("{rel}: {e}"))
 }
 
-/// `Kept`, naming the hidden file beside `rel` that holds the text taken out of it.
+/// `Kept` in its one wording (`write::kept_words`), naming the hidden file that holds the text
+/// taken out of `rel` by its workspace path: it is beside `rel`.
 fn kept_beside(rel: &str, kept: &Path) -> String {
     let name = kept.file_name().unwrap_or_default().to_string_lossy();
-    format!(
-        "{rel} changed while it was being written: the text taken out of it is kept beside it in \
-         {name}"
-    )
+    let at = match rel.rsplit_once('/') {
+        Some((folder, _)) => format!("{folder}/{name}"),
+        None => name.into_owned(),
+    };
+    write::kept_words(rel, at)
 }
 
 fn written(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
