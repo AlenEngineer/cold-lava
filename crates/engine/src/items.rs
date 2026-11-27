@@ -125,7 +125,9 @@ pub struct Item {
     pub parent: Option<String>,
     /// The author's `^id`.
     pub block_id: Option<String>,
-    /// Fingerprint of the item's own lines: which version of it this is.
+    /// Fingerprint of the item's own lines: which version of it this is. For a twin whose lines
+    /// another twin has, it also holds how many twins there are and the rev of the twin it is
+    /// under (`items/twins.rs`, `identity::twin_rev`), so a twin that moves changes its rev.
     pub rev: String,
     #[serde(flatten)]
     pub data: Data,
@@ -1202,53 +1204,41 @@ fn finish(
     identify(note, text, raws)
 }
 
-/// Gives each item its id and rev, in document order (a parent before its children).
+/// Gives each item its id and rev, in document order (a parent before its children): the rev
+/// of its lines, or a twin's (`twins`).
 fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
     let lines: Vec<&str> = text.lines().collect();
     let mut keys: Vec<String> = Vec::with_capacity(raws.len());
+    // What each key's anchor is made of (`anchor_of`).
+    let mut anchors: Vec<(Option<usize>, String)> = Vec::with_capacity(raws.len());
     let mut seen: HashMap<(String, String), usize> = HashMap::new();
     let mut items: Vec<Item> = Vec::with_capacity(raws.len());
     // An item's own lines, joined, reused from item to item.
-    let mut own = String::new();
+    let mut joined = String::new();
+    // Whether an anchor was counted twice: only then can two items be twins.
+    let mut repeated = false;
     for raw in raws {
         let kind = raw.data.kind();
-        let parent_key = raw.parent.map_or("", |p| keys[p].as_str());
-        let anchor = match (&raw.block_id, &raw.data) {
-            (Some(id), _) => format!("^{id}"),
-            (None, Data::Heading { text, .. }) => {
-                let mut path = raw.section.join("#");
-                if !raw.section.is_empty() {
-                    path.push('#');
-                }
-                path.push_str(text);
-                path
-            }
-            (None, Data::List { text }) => {
-                format!("{parent_key}/{}", identity::hash(text.as_bytes()))
-            }
-            (None, Data::Typed(_)) if raw.key.is_empty() => parent_key.to_string(),
-            (None, Data::Typed(_)) => {
-                format!("{parent_key}/{}", identity::hash(raw.key.as_bytes()))
-            }
-            (None, Data::Block) => String::new(),
-        };
+        let (under, own) = anchor_of(&raw);
+        let anchor = format!("{}{own}", under.map_or("", |p| keys[p].as_str()));
         let n = seen.entry((kind.to_string(), anchor.clone())).or_default();
         let key = match *n {
             0 => anchor,
             n => format!("{anchor}.{n}"),
         };
+        repeated |= *n > 0;
         *n += 1;
         let id = identity::id(&[note, kind, &key]);
-        own.clear();
+        joined.clear();
         for (i, line) in (lines.get(raw.line - 1..raw.end_line.min(lines.len())))
             .unwrap_or_default()
             .iter()
             .enumerate()
         {
             if i > 0 {
-                own.push('\n');
+                joined.push('\n');
             }
-            own.push_str(line);
+            joined.push_str(line);
         }
         items.push(Item {
             id,
@@ -1258,13 +1248,77 @@ fn identify(note: &str, text: &str, raws: Vec<Raw>) -> Vec<Item> {
             section: raw.section,
             parent: raw.parent.map(|p| items[p].id.clone()),
             block_id: raw.block_id,
-            rev: identity::line_id(&own),
+            rev: identity::line_id(&joined),
             data: raw.data,
         });
         keys.push(key);
+        anchors.push((under, own));
+    }
+    // Skipped for speed (#327): it cost every note about 40 µs, though with no anchor counted
+    // twice every key is its anchor and no two of a kind share one, so no item has a twin.
+    // A debug build runs it anyway and checks that it changes nothing, on every note a test reads.
+    if repeated {
+        twin_revs(&mut items, &anchors);
+    } else if cfg!(debug_assertions) {
+        let mut passed = items.clone();
+        twin_revs(&mut passed, &anchors);
+        assert_eq!(passed, items, "the skipped twin pass would change {note}");
     }
     items.sort_by_key(|i| i.line);
     items
+}
+
+/// What an item's anchor, its key before `identify` counts it, is made of: the item it is
+/// keyed under, whose key the anchor starts with, and what the anchor has after that key (all
+/// of it, under none).
+fn anchor_of(raw: &Raw) -> (Option<usize>, String) {
+    let hashed = |text: &str| format!("/{}", identity::hash(text.as_bytes()));
+    match (&raw.block_id, &raw.data) {
+        (Some(id), _) => (None, format!("^{id}")),
+        (None, Data::Heading { text, .. }) => {
+            let mut path = raw.section.join("#");
+            if !raw.section.is_empty() {
+                path.push('#');
+            }
+            path.push_str(text);
+            (None, path)
+        }
+        (None, Data::List { text }) => (raw.parent, hashed(text)),
+        (None, Data::Typed(_)) if raw.key.is_empty() => (raw.parent, String::new()),
+        (None, Data::Typed(_)) => (raw.parent, hashed(&raw.key)),
+        (None, Data::Block) => (None, String::new()),
+    }
+}
+
+/// Gives the items one of whose twins has the same lines a twin's rev (`twins`): `items` as
+/// `identify` made them, a parent before its children, and what their anchors are made of.
+fn twin_revs(items: &mut [Item], anchors: &[(Option<usize>, String)]) {
+    let revs = {
+        let keyed: Vec<twins::Keyed> = (items.iter().zip(anchors))
+            .map(|(item, (under, own))| twins::Keyed {
+                kind: item.data.kind(),
+                under: *under,
+                own,
+                rev: &item.rev,
+            })
+            .collect();
+        // A twin's rev for each twin. The item it is under comes before it, so that one's rev
+        // is here when it is a twin's, and else is the rev of its lines.
+        let mut revs: Vec<Option<String>> = Vec::with_capacity(keyed.len());
+        for (item, twin) in keyed.iter().zip(twins::of(&keyed)) {
+            let rev = twin.map(|twin| {
+                let under = (twin.under).map(|p| revs[p].as_deref().unwrap_or(keyed[p].rev));
+                identity::twin_rev(item.rev, twin.twins, under)
+            });
+            revs.push(rev);
+        }
+        revs
+    };
+    for (item, rev) in items.iter_mut().zip(revs) {
+        if let Some(rev) = rev {
+            item.rev = rev;
+        }
+    }
 }
 
 /// A heading's words in the source: ATX without its `#`s, setext without its underline.
@@ -1388,6 +1442,7 @@ fn list_text(first: &str) -> String {
 }
 
 pub mod anchors;
+mod twins;
 
 #[cfg(test)]
 mod pulldown;
@@ -1704,6 +1759,77 @@ Setext
             two[0].rev,
             identity::line_id("- [ ] Pay rent\n  by transfer")
         );
+    }
+
+    /// Twins (#327, `twins`): where a twin has an item's lines, the item's rev says how many
+    /// there are of them, so it changes when one comes or goes, and, under twins, which one it
+    /// is under. Twins told apart by their lines keep the revs of their lines.
+    #[test]
+    fn a_twins_rev_says_how_many_twins_there_are_and_which_twin_it_is_under() {
+        let line = "- [ ] Pay rent";
+        let lines = identity::line_id(line);
+        let read = |n: usize| items(&format!("{line}\n").repeat(n));
+        let (one, two, three) = (read(1), read(2), read(3));
+        assert_eq!(one[0].rev, lines, "no twin");
+        for (n, all) in [(2, &two), (3, &three)] {
+            let revs: Vec<&str> = all.iter().map(|i| i.rev.as_str()).collect();
+            assert_eq!(revs, vec![identity::twin_rev(&lines, n, None); n]);
+        }
+        assert_eq!((&two[0].id, &two[1].id), (&three[0].id, &three[1].id));
+        let dated = items("- [ ] Pay rent 📅 2026-11-12\n- [ ] Pay rent 📅 2026-12-12\n");
+        let want = identity::line_id("- [ ] Pay rent 📅 2026-12-12");
+        assert_eq!(dated[1].rev, want, "told apart by its lines");
+
+        let block = |date: &str| format!("- [ ] Rent 📅 {date}\n  - [ ] Transfer\n");
+        let (nov, dec) = (block("2026-11-01"), block("2026-12-01"));
+        let transfer = |text: &str| -> Item {
+            let mut all = items(text).into_iter();
+            all.find(|i| field(i, "text") == "Transfer").unwrap()
+        };
+        let first = transfer(&format!("{nov}{dec}"));
+        let under = identity::line_id("- [ ] Rent 📅 2026-11-01");
+        let own = identity::line_id("  - [ ] Transfer");
+        assert_eq!(first.rev, identity::twin_rev(&own, 2, Some(&under)));
+        // The first block gone, or the two swapped: another item holds the first's address.
+        for after in [format!("{dec}{nov}"), dec] {
+            let now = transfer(&after);
+            assert_eq!(now.id, first.id, "{after}");
+            assert_ne!(now.rev, first.rev, "{after}");
+        }
+        // Under an item with no twins, twins are told apart by their place under it alone: a
+        // tick of it leaves their revs.
+        let milk = |status: &str| items(&format!("- [{status}] Shop\n  - milk\n  - milk\n"));
+        let (open, done) = (milk(" "), milk("x"));
+        let own = identity::line_id("  - milk");
+        assert_eq!(open[1].rev, identity::twin_rev(&own, 2, None));
+        assert_eq!((&open[1].rev, &open[2].rev), (&done[1].rev, &done[2].rev));
+    }
+
+    /// A note in which no anchor is counted twice skips the twin pass (`identify`, for
+    /// speed), and a debug build checks there that the pass would change nothing. This reads
+    /// every note of the example workspace, the corpus and the tricky cases, and a note with
+    /// no twins at all, so that check runs on each.
+    #[test]
+    fn a_note_without_twins_gets_the_same_ids_and_revs_without_the_twin_pass() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
+        let mut notes: Vec<(String, String)> = Vec::new();
+        for e in walkdir::WalkDir::new(&workspace).into_iter().flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "md") {
+                let name = p.strip_prefix(&workspace).unwrap().to_string_lossy();
+                notes.push((name.into_owned(), std::fs::read_to_string(p).unwrap()));
+            }
+        }
+        notes.extend(cst::corpus());
+        for (k, text) in TRICKY.iter().enumerate() {
+            notes.push((format!("Tricky {k}.md"), text.to_string()));
+        }
+        let alone = "# Bills\n- [ ] Pay rent 📅 2026-11-12\n  - [ ] Transfer\n- milk\n- eggs\n";
+        notes.push(("Alone.md".into(), alone.into()));
+        let s = every_type("obsidian");
+        for (name, text) in &notes {
+            extract(name, text, &s);
+        }
     }
 
     #[test]

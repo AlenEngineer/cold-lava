@@ -36,7 +36,7 @@ expect-in 36 64 36 64 ●
 keys v
 drag 10 49 6 49
 wait-for path1: path, 6 vertices, 1 curved, closed
-expect-in 6 49 6 49 ◦
+wait-for-in 6 49 6 49 ◦
 keys N
 wait-for rename the part
 keys backspace backspace backspace backspace backspace

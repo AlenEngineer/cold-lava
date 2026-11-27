@@ -149,8 +149,10 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   A link to nothing or to a folder is `NotAFile`. The gateway never lets a link through
   (`files::resolve`).
   `taken` is the one test of whether something is at a path, a link to nothing included:
-  `create`, `create_dir`, `move_file`, `files::free_name` and `trash::free_path` ask it, and
-  so do a rename's checks and a merge's undo. Never call `std::fs::write` on workspace files.
+  `create`, `create_dir`, `files::free_name` and `trash::free_path` ask it, and so does a
+  merge's undo. `may_move` is the one test of whether a move may go ahead: nothing is at
+  the new path, or it differs only in case and is the very entry that moves (#388);
+  `move_file` and a rename's checks ask it. Never call `std::fs::write` on workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
   changed since it was read; `restore` puts it back. Frontends and extensions don't call
@@ -353,7 +355,10 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `items.rs`: notes as data. `extract()` reads a note into `Item`s (task, list, heading, block)
   in one walk through its tree (`cst::read`) in the workspace's flavour; `Workspace::items()`
   caches them per note on first use. Ids are stable (block id, heading path, or text hash under
-  the parent), `rev` hashes the item's lines. The walk reads blocks as pulldown-cmark, which
+  the parent, then `.n` for the nth repeat), `rev` hashes the item's lines, and a twin's (a
+  repeat whose lines another has too, `items/twins.rs`) also how many twins there are and,
+  under a twin, that twin's rev (`identity::twin_rev`), so an edit held by an address another
+  twin took is refused as changed (#327). The walk reads blocks as pulldown-cmark, which
   read them before, did, so ids didn't move; `items/pulldown.rs` keeps that pass for a test
   that compares the two on every note of the corpus. pulldown-cmark is a dev-dependency of
   the engine: those two test modules (`items/pulldown.rs`, `markdown/pulldown.rs`) are all
@@ -489,11 +494,12 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   are listed on #365.
 - `identity.rs`: the hash every id and rev is made with (`fnv`, FNV-1a; `hash`, as 16 hex
   digits), the last step of every id (`id`: the file, the kind and the key with a NUL between
-  each two, hashed) and a rev of text (`line_id`). A leaf. Each owner makes its own key: a
-  note's items in `items::identify` (a typed item's in `matcher.rs`), an owner's pieces and
-  typed items from the place it gave. Changing a key moves ids as surely as changing
-  `identity.rs`, and either is the owner's decision; its tests pin ids given before. A note's
-  key moves with the Markdown walk into its owner in step D-3 (#272).
+  each two, hashed), a rev of text (`line_id`) and a twin's (`twin_rev`, `items/twins.rs`: of
+  its lines, how many twins there are and, under a twin, that twin's rev). A leaf. Each owner
+  makes its own key: a note's items in `items::identify` (a typed item's in `matcher.rs`), an
+  owner's pieces and typed items from the place it gave. Changing a key moves ids as surely as
+  changing `identity.rs`, and either is the owner's decision; its tests pin ids given before. A
+  note's key moves with the Markdown walk into its owner in step D-3 (#272).
 - `bounded.rs`: the types another program's answer is held in (`file/read`, `file/edit`,
   `shape/region`, `shape/gesture`): `Text`, `List`, `Fields` and `Pairs`, each naming its
   bound, and the table of bounds, one type each (the trait `Limit`; the owner's limits of
@@ -613,8 +619,10 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   (`can_create_in`), and never makes a target again. Each says what closing it would lose
   (`unsaved`).
 - `line_input.rs`, `pick_list.rs`, `popup.rs`, `words.rs`: leaves the menu and its overlays
-  call: what a key does to a typed line, to a picked list's query and cursor, where a popup
-  goes and its frame, and `plural` (the app's one "1 note" / "2 notes").
+  call: what a key does to a typed line, to a picked list's query and cursor, and how the
+  list's rows are drawn (`pick_list::draw`, from the pieces each caller writes: the rows
+  shown around the chosen one, its colours, the characters a match hit), where a popup goes
+  and its frame, and `plural` (the app's one "1 note" / "2 notes").
 - `recipe_view.rs`: the palette's `recipe.run` dialog (pick, options, plan with diffs); `home.rs`
   plans and undoes through `recipe.rs`, and the core makes it (`Core::apply`), as a merge.
 - `embed.rs`: terminal-in-a-pane (portable-pty + vt100). Messages from the program arrive as a

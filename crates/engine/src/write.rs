@@ -182,17 +182,38 @@ pub fn create_dir(path: &Path) -> Result<(), WriteError> {
     std::fs::create_dir_all(path).map_err(io_err(path))
 }
 
-/// Move a file, a folder or a symlink (the link itself); refused if something is at `to`
-/// (`taken`), except a case-only rename of itself.
+/// Move a file, a folder or a symlink (the link itself); refused unless it `may_move`.
 pub fn move_file(from: &Path, to: &Path) -> Result<(), WriteError> {
-    let case_only = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
-    if taken(to) && !case_only {
+    if !may_move(from, to) {
         return Err(WriteError::Exists(to.to_path_buf()));
     }
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).map_err(io_err(dir))?;
     }
     std::fs::rename(from, to).map_err(io_err(from))
+}
+
+/// Whether `from` may move to `to`: nothing is there (`taken`), or `to` differs from `from`
+/// only in case and names the very entry `from` does, as on a file system that ignores case.
+/// Where case tells names apart, that spelling can be another file, which a move would replace.
+pub(crate) fn may_move(from: &Path, to: &Path) -> bool {
+    let Ok(there) = std::fs::symlink_metadata(to) else {
+        return true;
+    };
+    let case_only = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
+    case_only && std::fs::symlink_metadata(from).is_ok_and(|here| same_entry(&here, &there))
+}
+
+#[cfg(unix)]
+fn same_entry(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (a.dev(), a.ino()) == (b.dev(), b.ino())
+}
+
+/// Windows' std gives no stable file id yet; its file systems ignore case by default.
+#[cfg(not(unix))]
+fn same_entry(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -260,6 +281,38 @@ mod tests {
             create_dir(&d.join("x/Empty")),
             Err(WriteError::Exists(_))
         ));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Where case tells names apart, `lava.md` beside `Lava.md` is another entry: a case-only
+    /// move onto it is refused, and with nothing there it goes ahead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_case_only_move_never_replaces_another_entry() {
+        let d = dir("case");
+        let (upper, lower) = (d.join("Lava.md"), d.join("lava.md"));
+        std::fs::write(&upper, "upper").unwrap();
+        std::fs::write(&lower, "lower").unwrap();
+        let refused = move_file(&upper, &lower);
+        assert!(
+            matches!(&refused, Err(WriteError::Exists(p)) if *p == lower),
+            "{refused:?}"
+        );
+        assert_eq!(std::fs::read(&upper).unwrap(), b"upper");
+        assert_eq!(std::fs::read(&lower).unwrap(), b"lower");
+
+        std::fs::remove_file(&lower).unwrap();
+        std::os::unix::fs::symlink("nowhere.md", &lower).unwrap();
+        assert!(
+            matches!(move_file(&upper, &lower), Err(WriteError::Exists(_))),
+            "a link to nothing at the new spelling is another entry too"
+        );
+        assert!(is_link(&lower));
+
+        std::fs::remove_file(&lower).unwrap();
+        move_file(&upper, &lower).unwrap();
+        assert_eq!(files(&d), ["lava.md"]);
+        assert_eq!(std::fs::read(&lower).unwrap(), b"upper");
         let _ = std::fs::remove_dir_all(&d);
     }
 

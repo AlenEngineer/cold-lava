@@ -351,8 +351,7 @@ fn resolve(ix: &Index, moves: Vec<Move>) -> Result<Plan> {
                 false => bail!("{} can't move into {}: it moves too", m.from, f.from),
             }
         }
-        // A case-only rename of the same file is fine; anything else at the path isn't.
-        if crate::write::taken(&m.to_path) && lower(&m.to) != lower(&m.from) {
+        if !crate::write::may_move(&m.from_path, &m.to_path) {
             bail!("{} already exists", m.to);
         }
     }
@@ -672,7 +671,7 @@ pub(crate) fn apply(plan: &Plan) -> Result<()> {
         if !m.from_path.exists() {
             bail!("{} no longer exists", m.from);
         }
-        if crate::write::taken(&m.to_path) && m.to.to_lowercase() != m.from.to_lowercase() {
+        if !crate::write::may_move(&m.from_path, &m.to_path) {
             bail!("{} already exists", m.to);
         }
     }
@@ -782,6 +781,35 @@ mod tests {
              Also [md](../Geology/Hot%20Rock.md) and [abs](Geology/Hot%20Rock.md#Textures).\n\
              Code `[[Lava]]` stays.\n```\n[[Lava]]\n```\n[[Lavender]] too.\n"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #388: where case tells names apart, a case-only rename onto another note is refused
+    /// when planned and when applied, and one with nothing at the new spelling goes ahead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_case_only_rename_never_replaces_another_note() {
+        let (dir, ix) = workspace_with("case", &[("Lava.md", "upper"), ("lava.md", "lower")]);
+        let upper = (ix.workspace.notes.iter())
+            .position(|n| n.rel == "Lava")
+            .unwrap();
+        let refused = plan(&ix, upper, "lava").unwrap_err().to_string();
+        assert_eq!(refused, "lava.md already exists");
+
+        std::fs::remove_file(dir.join("lava.md")).unwrap();
+        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let upper = ix.by_rel("Lava").unwrap();
+        let p = plan(&ix, upper, "lava").unwrap();
+        std::fs::write(dir.join("lava.md"), "lower").unwrap();
+        let refused = apply(&p).unwrap_err().to_string();
+        assert_eq!(refused, "lava.md already exists");
+        assert_eq!(read(&dir, "Lava.md"), "upper");
+        assert_eq!(read(&dir, "lava.md"), "lower");
+
+        std::fs::remove_file(dir.join("lava.md")).unwrap();
+        apply(&p).unwrap();
+        assert!(!dir.join("Lava.md").exists());
+        assert_eq!(read(&dir, "lava.md"), "upper");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
