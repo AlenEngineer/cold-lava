@@ -427,7 +427,9 @@ mod tests {
         std::fs::rename(&other, p).unwrap();
     }
 
-    const THEIRS: [(&str, fn(&Path)); 2] = [
+    type Theirs = fn(&Path);
+
+    const THEIRS: [(&str, Theirs); 2] = [
         ("in place", theirs_in_place),
         ("by a rename", theirs_by_a_rename),
     ];
