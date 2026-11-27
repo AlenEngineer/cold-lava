@@ -1042,9 +1042,10 @@ mod tests {
     }
 
     /// A cold-lava killed during a save leaves its staged file (#443). The next write in that
-    /// folder takes it away: removed when it holds what its file holds, kept under a kept name
-    /// otherwise (it may be the killed save's text, or another program's it took out). A staged
-    /// file of a live cold-lava, one staged moments ago, and a kept text are left alone.
+    /// folder takes it away: removed when it holds what its file holds or nothing, kept under a
+    /// kept name otherwise (it may be the killed save's text, or another program's it took
+    /// out). A staged file of a live cold-lava, one staged moments ago, and a kept text are
+    /// left alone.
     #[test]
     fn a_staged_file_a_killed_save_left_is_cleared_by_the_next_write() {
         let d = dir("stale");
@@ -1069,11 +1070,13 @@ mod tests {
         std::fs::write(d.join("N.md"), "now").unwrap();
         let copy = format!(".N.md.cold-lava-{dead}-0.tmp");
         let other = format!(".N.md.cold-lava-{dead}-1.tmp");
+        let empty = format!(".N.md.cold-lava-{dead}-3.tmp");
         let alive = format!(".N.md.cold-lava-{live}-900.tmp");
         let young = format!(".N.md.cold-lava-{dead}-2.tmp");
         let kept = ".N.cold-lava-kept-5-0.md";
         leave(&copy, "now", Some(long_ago));
         leave(&other, "the killed save", Some(long_ago));
+        leave(&empty, "", Some(long_ago));
         leave(&alive, "a save under way", Some(long_ago));
         leave(&young, "staged just now", None);
         leave(kept, "kept", Some(long_ago));
@@ -1083,6 +1086,7 @@ mod tests {
             !left.contains(&copy),
             "a copy of the file is removed: {left:?}"
         );
+        assert!(!left.contains(&empty), "an empty one is removed: {left:?}");
         assert!(!left.contains(&other), "{left:?}");
         let keeps: Vec<_> = left
             .iter()

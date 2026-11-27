@@ -4,8 +4,9 @@
 //!
 //! What a staged file holds after a kill depends on when the kill came: the killed save's new
 //! text (before the swap), the text the swap took out (after it), or another program's text
-//! `put_back` was handing back. So one is removed only when it holds what its file holds now;
-//! any other is kept beside the file under a kept name (`replace::keep`), never removed.
+//! `put_back` was handing back. So one is removed only when it holds what its file holds now,
+//! or nothing (a kill before the bytes went in); any other is kept beside the file under a
+//! kept name (`replace::keep`), never removed.
 //!
 //! Which files are a dead cold-lava's is told by the name alone: `.Name.cold-lava-PID-N.tmp`
 //! with digits for PID and N (`staged_for`), where no process has that PID (`dead`), last written
@@ -71,7 +72,7 @@ fn clear(dir: &Path) -> bool {
         }
         let file = dir.join(file);
         let now = std::fs::read(&file).unwrap_or_default();
-        replace::keep(&file, &file, &entry.path(), &[&now]);
+        replace::keep(&file, &file, &entry.path(), &[now.as_slice(), b""]);
     }
     done
 }
