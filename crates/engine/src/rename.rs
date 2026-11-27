@@ -638,36 +638,50 @@ pub(crate) fn check_unchanged<'a>(
     Ok(())
 }
 
-/// Files a merge or a recipe wrote, each as just written, with what it held before, to put back.
-#[derive(Clone, Debug, Default)]
-pub struct Written(Vec<(Seen, String)>);
+/// Files a merge or a recipe wrote, each as just written, with what it held before, to put back,
+/// in the workspace at `root`, from which an error putting one back names a kept text
+/// (`WriteError::named_in`). Made only by `all`.
+#[derive(Clone, Debug)]
+pub struct Written {
+    root: PathBuf,
+    files: Vec<(Seen, String)>,
+}
 
 impl Written {
     /// Write each of `edits` over its old text; if one fails, put back the ones written. A
-    /// kept text is named from `root`, the workspace's (`WriteError::named_in`).
+    /// kept text is named from `root`, the workspace's (`WriteError::named_in`), whether the
+    /// write kept it or the putting back did.
     pub(crate) fn all<'a>(
         root: &Path,
         edits: impl IntoIterator<Item = &'a FileEdit>,
     ) -> Result<Written> {
-        let mut written = Written::default();
+        let mut written = Written {
+            root: root.to_path_buf(),
+            files: Vec::new(),
+        };
         for e in edits {
             let (old, new) = (e.old_text.as_bytes(), e.new_text.as_bytes());
             if let Err(err) = Seen::kept(&e.path, old).replace(new) {
                 let undone = written.put_back();
                 return Err(err.named_in(root)).with_context(|| match undone {
                     Ok(()) => format!("writing {}; nothing was changed", e.file),
-                    Err(_) => format!("writing {}; some files couldn't be put back", e.file),
+                    Err(back) => {
+                        format!(
+                            "writing {}; some files couldn't be put back: {back}",
+                            e.file
+                        )
+                    }
                 });
             }
             let after = Seen::kept(&e.path, new);
-            written.0.push((after, e.old_text.clone()));
+            written.files.push((after, e.old_text.clone()));
         }
         Ok(written)
     }
 
     /// Refuse, naming `what` (a merge), if a written file was changed since.
     pub(crate) fn check(&self, what: &str) -> Result<()> {
-        for (after, _) in &self.0 {
+        for (after, _) in &self.files {
             if after.unchanged().is_err() {
                 bail!(
                     "{} changed since the {what}; the {what} can't be undone",
@@ -678,19 +692,20 @@ impl Written {
         Ok(())
     }
 
-    /// Write back what each file held, if it still holds what was written.
+    /// Write back what each file held, if it still holds what was written. A kept text is
+    /// named from the workspace's root (`WriteError::named_in`).
     pub(crate) fn put_back(&self) -> Result<(), crate::write::WriteError> {
         let mut result = Ok(());
-        for (after, before) in self.0.iter().rev() {
+        for (after, before) in self.files.iter().rev() {
             if let Err(e) = after.replace(before.as_bytes()) {
-                result = Err(e);
+                result = Err(e.named_in(&self.root));
             }
         }
         result
     }
 
     pub fn paths(&self) -> impl Iterator<Item = &Path> {
-        self.0.iter().map(|(after, _)| after.path())
+        self.files.iter().map(|(after, _)| after.path())
     }
 }
 
@@ -775,6 +790,59 @@ mod tests {
             panic!("the canvas owner answers at once");
         };
         made
+    }
+
+    /// A merge or a recipe whose second write is refused puts the first file back; while it
+    /// does, two other programs save that file, so one text is kept beside it. The refusal
+    /// names the kept text from the workspace's root, as the status line shows it.
+    #[test]
+    fn a_text_kept_while_putting_files_back_is_named_from_the_root() {
+        let (dir, _) = workspace_with("put-back-kept", &[("A.md", "a1"), ("B.md", "b1")]);
+        let edit = |file: &str, old: &str, new: &str| FileEdit {
+            file: file.into(),
+            path: dir.join(file),
+            old_text: old.into(),
+            new_text: new.into(),
+            links: 0,
+            changes: Vec::new(),
+            owned: None,
+        };
+        // B.md changed since it was read, so its write is refused and A.md goes back.
+        let edits = [edit("A.md", "a1", "a2"), edit("B.md", "b0", "b2")];
+        let (theirs, third) = (dir.join("A.md"), dir.join("A.md"));
+        // The third replace of this thread is A.md's putting back.
+        crate::write::lands::in_replace(
+            2,
+            move || {
+                let other = theirs.with_file_name("theirs.tmp");
+                std::fs::write(&other, "theirs").unwrap();
+                std::fs::rename(&other, &theirs).unwrap();
+            },
+            move |round| {
+                if round == 0 {
+                    std::fs::write(&third, "third").unwrap();
+                }
+            },
+        );
+        let refused = Written::all(&dir, &edits).unwrap_err();
+        let kept: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".A.cold-lava-kept-"))
+            .collect();
+        let [kept] = kept.as_slice() else {
+            panic!("one kept text: {kept:?}, {refused:#}");
+        };
+        assert_eq!(read(&dir, kept), "theirs");
+        assert_eq!(read(&dir, "A.md"), "third");
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "writing B.md; some files couldn't be put back: \
+                 other text kept in {kept} · A.md changed while saving"
+            )
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

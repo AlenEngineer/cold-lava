@@ -87,10 +87,10 @@ impl WriteError {
     /// What a person is shown; the other refusals read as `Display` says them.
     pub fn named_from(&self, root: &Path) -> String {
         match self {
-            WriteError::Kept(p, kept) => kept_words(
-                crate::rel_path::or_whole(root, p),
-                crate::rel_path::or_whole(root, kept),
-            ),
+            WriteError::Kept(p, kept) => {
+                let (p, kept) = kept_named(root, p, kept);
+                kept_words(p, kept)
+            }
             _ => self.to_string(),
         }
     }
@@ -100,13 +100,23 @@ impl WriteError {
     /// reads its reason back, `Reason::of`) and whose words a person is shown.
     pub fn named_in(self, root: &Path) -> WriteError {
         match self {
-            WriteError::Kept(p, kept) => WriteError::Kept(
-                crate::rel_path::or_whole(root, &p).into(),
-                crate::rel_path::or_whole(root, &kept).into(),
-            ),
+            WriteError::Kept(p, kept) => {
+                let (p, kept) = kept_named(root, &p, &kept);
+                WriteError::Kept(p.into(), kept.into())
+            }
             e => e,
         }
     }
+}
+
+/// A kept text's two paths, the file's and the kept text's, as a person is shown them: from
+/// `root`, the workspace's (`rel_path::or_whole`: a path outside it is named whole). The one
+/// rule `named_from` and `named_in` name them by.
+fn kept_named(root: &Path, p: &Path, kept: &Path) -> (String, String) {
+    (
+        crate::rel_path::or_whole(root, p),
+        crate::rel_path::or_whole(root, kept),
+    )
 }
 
 fn io_err(path: &Path) -> impl Fn(io::Error) -> WriteError + '_ {
@@ -144,18 +154,25 @@ fn landing(path: &Path) -> Result<PathBuf, WriteError> {
 /// Replace `file`, where a write to `path` lands, with `bytes`: a temporary file beside it,
 /// then a rename. Errors name `path`, as the caller does.
 fn write_at(path: &Path, file: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+    folder_made(file)?;
     let new = staged(path, file, bytes)?;
     std::fs::rename(&new, file).map_err(|e| unstaged(&new, io_err(path)(e)))
 }
 
-/// A new file beside `file` holding `bytes`, on disk and with `file`'s permissions: what a
-/// write renames into place. Errors name `path`.
-fn staged(path: &Path, file: &Path, bytes: &[u8]) -> Result<PathBuf, WriteError> {
+/// The folder `file` goes in, and any missing above it, made: what `write_atomic` and `create`
+/// do first. `replace` never does: a file it replaces is in a folder already.
+fn folder_made(file: &Path) -> Result<(), WriteError> {
     let dir = file
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir).map_err(io_err(dir))?;
+    std::fs::create_dir_all(dir).map_err(io_err(dir))
+}
+
+/// A new file beside `file` holding `bytes`, on disk and with `file`'s permissions: what a
+/// write renames into place. It makes no folder: one that isn't there is `Io`. Errors name
+/// `path`.
+fn staged(path: &Path, file: &Path, bytes: &[u8]) -> Result<PathBuf, WriteError> {
     let new = reserved(file, beside).map_err(io_err(path))?;
     let mut f = std::fs::OpenOptions::new()
         .write(true)
@@ -232,6 +249,11 @@ pub(crate) fn replace_through_link(
 }
 
 fn replace_at(path: &Path, file: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
+    #[cfg(test)]
+    if let Some((compared, swapped)) = lands::take() {
+        let hooks = replace::Hooks { compared, swapped };
+        return replace::checked(path, file, expected, bytes, hooks);
+    }
     let hooks = replace::Hooks {
         compared: || {},
         swapped: |_| {},
@@ -252,6 +274,7 @@ pub fn create(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
     if taken(path) {
         return Err(WriteError::Exists(path.to_path_buf()));
     }
+    folder_made(path)?;
     let new = staged(path, path, bytes)?;
     os_rename::no_replace(&new, path).map_err(|e| unstaged(&new, refused_at(path, path, e)))
 }
@@ -342,6 +365,45 @@ fn same_entry(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn same_entry(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
     true
+}
+
+/// Tests only: other writes landed in one `replace` of this thread where `replace::Hooks`
+/// lands them, for a test of a caller that can't hand `checked` its hooks (`rename::Written`).
+#[cfg(test)]
+pub(crate) mod lands {
+    use std::cell::RefCell;
+
+    type Compared = Box<dyn FnOnce()>;
+    type Swapped = Box<dyn FnMut(usize)>;
+    type Next = (usize, Option<(Compared, Swapped)>);
+
+    thread_local! {
+        static NEXT: RefCell<Next> = const { RefCell::new((0, None)) };
+    }
+
+    /// Land `compared` and `swapped` in this thread's `replace` after the next `skip` ones.
+    pub(crate) fn in_replace(
+        skip: usize,
+        compared: impl FnOnce() + 'static,
+        swapped: impl FnMut(usize) + 'static,
+    ) {
+        let hooks: (Compared, Swapped) = (Box::new(compared), Box::new(swapped));
+        NEXT.with(|n| *n.borrow_mut() = (skip, Some(hooks)));
+    }
+
+    pub(super) fn take() -> Option<(Compared, Swapped)> {
+        NEXT.with(|n| {
+            let mut n = n.borrow_mut();
+            match n.0 {
+                _ if n.1.is_none() => None,
+                0 => n.1.take(),
+                _ => {
+                    n.0 -= 1;
+                    None
+                }
+            }
+        })
+    }
 }
 
 #[cfg(test)]

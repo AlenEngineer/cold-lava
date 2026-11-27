@@ -173,7 +173,7 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   holds, and after a swap back only when its rounds settled. cold-lava's own replaces take
   turns (`write/lock.rs`): each holds `flock` on its file's folder (the link's target's, for
   `replace_through_link`) from the compare to the last swap (the new text is staged before),
-  so no two replaces race the swap; other programs, and cold-lava's own moves and deletes
+  so no two replaces that hold their turn race the swap; other programs, and cold-lava's own moves and deletes
   (`move_file`, `trash::delete`, which take no turn), still can. The lock leaves no file, a
   write that waits 5 s goes ahead without it (each later save in that folder waits the 5 s
   again while the holder is stopped), and on NFS it is never held. A swap back

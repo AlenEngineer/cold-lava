@@ -48,9 +48,8 @@ pub(super) fn checked(
     bytes: &[u8],
     hooks: Hooks<impl FnOnce(), impl FnMut(usize)>,
 ) -> Result<(), WriteError> {
-    // A file that isn't there is refused before anything is staged, as it was when the
-    // compare came first, so staging never makes its folder.
-    std::fs::metadata(file).map_err(io_err(path))?;
+    // Staging makes no folder (`staged`): in a folder that isn't there it is refused as `Io`,
+    // and a file that isn't there is refused as `Io` by the read, with nothing left staged.
     let new = staged(path, file, bytes)?;
     let _turn = lock::take(file);
     let now = std::fs::read(file).map_err(|e| unstaged(&new, io_err(path)(e)))?;
