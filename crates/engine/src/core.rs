@@ -17,14 +17,15 @@ use crate::read;
 use crate::trash::{Bin, system_bin};
 use crate::workspace::{self, NoteChange, Owned, Workspace};
 use anyhow::Result;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+mod watch;
 mod whole;
 
+use watch::{Kind, Watch, classify};
 pub use whole::{Applying, NotApplied, Planned};
 
 /// Something changed in the workspace. Note paths are workspace-relative, without `.md`.
@@ -113,10 +114,7 @@ const SETTLE: Duration = Duration::from_millis(250);
 
 pub struct Core {
     pub index: Index,
-    fs_events: Option<Receiver<notify::Event>>,
-    _watcher: Option<RecommendedWatcher>,
-    /// `.obsidian`'s own folder, when it is a symlink to one.
-    linked_obsidian: Option<PathBuf>,
+    watch: Watch,
     changed: Vec<PathBuf>,
     boards: Vec<String>,
     files: Vec<String>,
@@ -144,15 +142,12 @@ pub struct Core {
 impl Core {
     pub fn open(root: &Path) -> Result<Core> {
         let index = Index::build(workspace::scan(root)?);
-        let linked_obsidian = linked_obsidian(&index.workspace.root);
-        let (fs_events, watcher) = watch(&index.workspace.root, linked_obsidian.as_deref());
+        let watch = Watch::start(&index.workspace.root);
         let owned = index.workspace.owned.iter();
         let unseen = owned.filter_map(|f| owned_news(None, Some(f))).collect();
         Ok(Core {
             index,
-            fs_events,
-            _watcher: watcher,
-            linked_obsidian,
+            watch,
             changed: Vec::new(),
             boards: Vec::new(),
             files: Vec::new(),
@@ -184,7 +179,7 @@ impl Core {
 
     /// Whether the workspace folder is being watched (if not, call `note_changed` / `rescan`).
     pub fn is_live(&self) -> bool {
-        self.fs_events.is_some()
+        self.watch.is_live()
     }
 
     /// Get every event from now on. Subscribers that go away are dropped.
@@ -227,7 +222,7 @@ impl Core {
         changes.into_iter().map(Event::from).collect()
     }
 
-    /// After the workspace was read from scratch (`scanned`): every owned file is read again
+    /// After the workspace was read from scratch (`v`): every owned file is read again
     /// over what it held before, so what it leaves out, and that one can't be read, is news
     /// only against that. Returns what went wrong reading one (once a version: `Owned::failed`)
     /// and what an owned file leaves out where that is news (`owned_news`), for the files the
@@ -236,19 +231,19 @@ impl Core {
     /// Every file action in the menu rescans (a create, a duplicate, a rename, a move, a
     /// delete), on the UI thread, so its cost counts. The scan's own reading of each canvas is
     /// what the canvas owner gives for it, so a canvas whose version that read is taken from it
-    /// rather than parsed again (`Reread::All`); the index is linked once, after the owned
-    /// files are read. What a rescan costs beyond main's before #363 is one more walk of the
-    /// workspace for the owned files and a read of each one's bytes: measured on 2026-11-27
-    /// (PR #416) at about +35 ms of CPU a rescan, within noise from -10 to +72 ms, on 3,300
-    /// notes with or without 100 boards of 30 cards, against 380 to 520 ms for the rescan.
-    fn rescanned(&mut self, scanned: Workspace) -> Vec<Event> {
-        let mut index = Index::unlinked(scanned);
-        let canvases = std::mem::take(&mut index.workspace.owned);
-        self.index.workspace.owned = std::mem::replace(&mut self.index, index).workspace.owned;
+    /// rather than parsed again (`Reread::All`); the owned files are read into `v` before it
+    /// is indexed, so it is linked once. What a rescan costs beyond main's before #363 is one
+    /// more walk of the workspace for the owned files and a read of each one's bytes: measured
+    /// on 2026-11-27 (PR #416) at about +35 ms of CPU a rescan, within noise from -10 to +72
+    /// ms, on 3,300 notes with or without 100 boards of 30 cards, against 380 to 520 ms for
+    /// the rescan.
+    fn rescanned(&mut self, mut v: Workspace) -> Vec<Event> {
+        let held = std::mem::take(&mut self.index.workspace.owned);
+        let canvases = std::mem::replace(&mut v.owned, held);
         self.changed.clear();
         let scanned = canvases.into_iter().map(|f| (f.rel.clone(), f)).collect();
-        let (_, events) = self.owned_scan(Reread::All { scanned });
-        self.index.relink();
+        let (_, events) = owned_scan(&mut self.owners, &mut v, Reread::All { scanned });
+        self.index = Index::build(v);
         let news = self.items.reset(&self.index.workspace);
         self.tell(news);
         events
@@ -263,7 +258,8 @@ impl Core {
         let before = owned.len();
         owned.retain(|f| crate::owner::built_in(&f.rel).is_some());
         let dropped = before != owned.len();
-        let (changed, mut events) = self.owned_scan(Reread::Changed);
+        let (changed, mut events) =
+            owned_scan(&mut self.owners, &mut self.index.workspace, Reread::Changed);
         events.extend(changed.into_iter().map(Event::OwnedChanged));
         if dropped || !events.is_empty() {
             self.index.relink();
@@ -272,42 +268,6 @@ impl Core {
         }
         self.broadcast(&events);
         self.unseen.extend(events);
-    }
-
-    /// Find every file of an owned kind again, the built-in owners' included, and read each the
-    /// way `owned_changed` does, without telling subscribers (after a scan, which is a reset).
-    /// The listing (`files::of_kinds`, which reads no hidden folder and no `node_modules`) is
-    /// the one rule for what is gone: a file it held that isn't listed is (`owned_gone`), even
-    /// when its bytes are still on disk. Returns the files whose items or links changed, and
-    /// what went wrong.
-    fn owned_scan(&mut self, reread: Reread) -> (Vec<String>, Vec<Event>) {
-        let built_in = crate::owner::BUILT_IN.iter().map(|(x, _)| *x);
-        let kinds = self.owners.kinds().iter().map(|k| k.extension.as_str());
-        let kinds: Vec<&str> = kinds.chain(built_in).collect();
-        let found = files::of_kinds(&self.index, &kinds);
-        let listed: std::collections::HashSet<&String> = found.iter().collect();
-        let held = self.index.workspace.owned.iter().map(|f| &f.rel);
-        let unlisted: Vec<String> = held.filter(|r| !listed.contains(r)).cloned().collect();
-        let (mut changed, mut events) = (Vec::new(), Vec::new());
-        for rel in unlisted {
-            events.extend(self.owned_gone(&rel));
-            changed.push(rel);
-        }
-        let (read, said) = self.owned_read(&found, reread);
-        changed.extend(read);
-        events.extend(said);
-        (changed, events)
-    }
-
-    /// The owned file at `rel`, which it holds, is gone: its items and links leave the
-    /// workspace and its owner's answers for it are forgotten. Returns what it leaves out, when
-    /// that is news now (`owned_news`).
-    fn owned_gone(&mut self, rel: &str) -> Option<Event> {
-        let owned = &mut self.index.workspace.owned;
-        let i = owned.binary_search_by(|f| f.rel.as_str().cmp(rel)).ok()?;
-        let gone = owned.remove(i);
-        self.owners.forget(rel);
-        owned_news(Some(&gone), None)
     }
 
     /// `file/read` requests for the owners, each with its owner's name: files whose version
@@ -379,7 +339,12 @@ impl Core {
 
     /// Owned files at `rels` may have changed on disk: read them again, and tell subscribers.
     fn owned_changed(&mut self, rels: &[String]) -> Vec<Event> {
-        let (changed, mut events) = self.owned_read(rels, Reread::Changed);
+        let (changed, mut events) = owned_read(
+            &mut self.owners,
+            &mut self.index.workspace,
+            rels,
+            Reread::Changed,
+        );
         if !changed.is_empty() {
             self.index.relink();
             let news = self.items.changed(&self.index.workspace, &changed);
@@ -387,76 +352,6 @@ impl Core {
         }
         events.extend(changed.into_iter().map(Event::OwnedChanged));
         events
-    }
-
-    /// Bring the owned files at `rels` up to date with the disk: what their owner gave for the
-    /// version there, else ask it, keeping what it gave before meanwhile. Returns the files whose
-    /// items or links changed, and what went wrong: a version that can't be read is said once
-    /// (`Owned::failed`). Links are not resolved again here. A file at a symlink, or behind
-    /// one, is gone (`owned_bytes`).
-    fn owned_read(&mut self, rels: &[String], mut reread: Reread) -> (Vec<String>, Vec<Event>) {
-        let root = self.root().to_path_buf();
-        let (mut changed, mut events) = (Vec::new(), Vec::new());
-        for rel in rels {
-            let Some(owner) = self.owners.owner_of(rel).map(String::from) else {
-                continue;
-            };
-            let held = (self.index.workspace.owned).binary_search_by(|f| f.rel.as_str().cmp(rel));
-            let Some(bytes) = owned_bytes(&root, rel) else {
-                if held.is_ok() {
-                    events.extend(self.owned_gone(rel));
-                    changed.push(rel.clone());
-                }
-                continue;
-            };
-            let rev = read::rev(&bytes);
-            let owned = &mut self.index.workspace.owned;
-            let i = match held {
-                Ok(i)
-                    if matches!(reread, Reread::Changed)
-                        && owned[i].shows(&rev, self.owners.given(&owner, rel, &rev)) =>
-                {
-                    continue;
-                }
-                Ok(i) => i,
-                Err(i) => {
-                    owned.insert(i, Owned::new(rel.clone(), root.join(rel), &owner));
-                    changed.push(rel.clone());
-                    i
-                }
-            };
-            let scanned = match &mut reread {
-                Reread::All { scanned } => scanned.remove(rel),
-                Reread::Changed => None,
-            };
-            let before = match owner_gave(&mut self.owners, &owner, rel, &rev, bytes, scanned) {
-                Gave::Scanned(file) => std::mem::replace(&mut owned[i], *file),
-                Gave::Given(given) => {
-                    let read = given::read(rel, &given, self.index.workspace.item_settings());
-                    self.index.workspace.owned[i].take(rev, given, read)
-                }
-                Gave::Failed(message) => {
-                    let file = &mut self.index.workspace.owned[i];
-                    if file.failed.as_ref() != Some(&rev) {
-                        file.failed = Some(rev);
-                        let path = rel.clone();
-                        events.push(Event::OwnerTrouble {
-                            owner,
-                            path,
-                            message,
-                        });
-                    }
-                    continue;
-                }
-                Gave::Asked => continue,
-            };
-            let now = &self.index.workspace.owned[i];
-            events.extend(owned_news(Some(&before), Some(now)));
-            if changed.last() != Some(rel) {
-                changed.push(rel.clone());
-            }
-        }
-        (changed, events)
     }
 
     fn broadcast(&mut self, events: &[Event]) {
@@ -972,7 +867,7 @@ impl Core {
     pub fn poll(&mut self) -> Vec<Event> {
         self.owners.save();
         let unseen = std::mem::take(&mut self.unseen);
-        self.collect_fs_events();
+        self.heard();
         if self.due.is_none_or(|t| Instant::now() < t) {
             return unseen;
         }
@@ -1006,31 +901,28 @@ impl Core {
         unseen.into_iter().chain(events).collect()
     }
 
-    fn collect_fs_events(&mut self) {
-        let Some(rx) = &self.fs_events else { return };
-        let root = self.index.workspace.root.clone();
-        let obsidian = self.linked_obsidian.as_deref();
+    /// Take what the watcher heard, to read once things settle.
+    fn heard(&mut self) {
+        let root = self.root().to_path_buf();
         let mut any = false;
-        for ev in rx.try_iter() {
-            for p in ev.paths.iter().flat_map(|p| names(&root, obsidian, p)) {
-                match classify(&root, &p) {
-                    Kind::Note => self.changed.push(p),
-                    Kind::Board(rel) => {
-                        if !self.boards.contains(&rel) {
-                            self.boards.push(rel);
-                        }
+        for p in self.watch.heard() {
+            match classify(&root, &p) {
+                Kind::Note => self.changed.push(p),
+                Kind::Board(rel) => {
+                    if !self.boards.contains(&rel) {
+                        self.boards.push(rel);
                     }
-                    Kind::File(rel) => {
-                        if !self.files.contains(&rel) {
-                            self.files.push(rel);
-                        }
-                    }
-                    Kind::GraphSettings => self.graph_settings = true,
-                    Kind::Folder => self.rescan = true,
-                    Kind::Ignored => continue,
                 }
-                any = true;
+                Kind::File(rel) => {
+                    if !self.files.contains(&rel) {
+                        self.files.push(rel);
+                    }
+                }
+                Kind::GraphSettings => self.graph_settings = true,
+                Kind::Folder => self.rescan = true,
+                Kind::Ignored => continue,
             }
+            any = true;
         }
         if any {
             self.schedule(SETTLE);
@@ -1038,41 +930,115 @@ impl Core {
     }
 }
 
-enum Kind {
-    Note,
-    Board(String),
-    File(String),
-    GraphSettings,
-    /// Something without an extension: most likely a folder that was moved or deleted, which
-    /// only a full rescan catches reliably.
-    Folder,
-    Ignored,
+/// Find every file of an owned kind again, the built-in owners' included, and read each the
+/// way `owned_changed` does, without telling subscribers (after a scan, which is a reset).
+/// The listing (`files::of_kinds`, which reads no hidden folder and no `node_modules`) is
+/// the one rule for what is gone: a file it held that isn't listed is (`owned_gone`), even
+/// when its bytes are still on disk. Returns the files whose items or links changed, and
+/// what went wrong.
+fn owned_scan(owners: &mut Owners, v: &mut Workspace, reread: Reread) -> (Vec<String>, Vec<Event>) {
+    let built_in = crate::owner::BUILT_IN.iter().map(|(x, _)| *x);
+    let kinds = owners.kinds().iter().map(|k| k.extension.as_str());
+    let kinds: Vec<&str> = kinds.chain(built_in).collect();
+    let found = files::of_kinds(v, &kinds);
+    let listed: std::collections::HashSet<&String> = found.iter().collect();
+    let held = v.owned.iter().map(|f| &f.rel);
+    let unlisted: Vec<String> = held.filter(|r| !listed.contains(r)).cloned().collect();
+    let (mut changed, mut events) = (Vec::new(), Vec::new());
+    for rel in unlisted {
+        events.extend(owned_gone(owners, v, &rel));
+        changed.push(rel);
+    }
+    let (read, said) = owned_read(owners, v, &found, reread);
+    changed.extend(read);
+    events.extend(said);
+    (changed, events)
 }
 
-fn classify(root: &Path, path: &Path) -> Kind {
-    let Ok(rel) = path.strip_prefix(root) else {
-        return Kind::Ignored;
-    };
-    let rel_s = rel.to_string_lossy().replace('\\', "/");
-    if rel_s == ".obsidian/graph.json" {
-        return Kind::GraphSettings;
+/// The owned file at `rel`, which it holds, is gone: its items and links leave the
+/// workspace and its owner's answers for it are forgotten. Returns what it leaves out, when
+/// that is news now (`owned_news`).
+fn owned_gone(owners: &mut Owners, v: &mut Workspace, rel: &str) -> Option<Event> {
+    let owned = &mut v.owned;
+    let i = owned.binary_search_by(|f| f.rel.as_str().cmp(rel)).ok()?;
+    let gone = owned.remove(i);
+    owners.forget(rel);
+    owned_news(Some(&gone), None)
+}
+
+/// Bring the owned files at `rels` up to date with the disk: what their owner gave for the
+/// version there, else ask it, keeping what it gave before meanwhile. Returns the files whose
+/// items or links changed, and what went wrong: a version that can't be read is said once
+/// (`Owned::failed`). Links are not resolved again here. A file at a symlink, or behind
+/// one, is gone (`owned_bytes`).
+fn owned_read(
+    owners: &mut Owners,
+    v: &mut Workspace,
+    rels: &[String],
+    mut reread: Reread,
+) -> (Vec<String>, Vec<Event>) {
+    let root = v.root.clone();
+    let (mut changed, mut events) = (Vec::new(), Vec::new());
+    for rel in rels {
+        let Some(owner) = owners.owner_of(rel).map(String::from) else {
+            continue;
+        };
+        let held = v.owned.binary_search_by(|f| f.rel.as_str().cmp(rel));
+        let Some(bytes) = owned_bytes(&root, rel) else {
+            if held.is_ok() {
+                events.extend(owned_gone(owners, v, rel));
+                changed.push(rel.clone());
+            }
+            continue;
+        };
+        let rev = read::rev(&bytes);
+        let owned = &mut v.owned;
+        let i = match held {
+            Ok(i)
+                if matches!(reread, Reread::Changed)
+                    && owned[i].shows(&rev, owners.given(&owner, rel, &rev)) =>
+            {
+                continue;
+            }
+            Ok(i) => i,
+            Err(i) => {
+                owned.insert(i, Owned::new(rel.clone(), root.join(rel), &owner));
+                changed.push(rel.clone());
+                i
+            }
+        };
+        let scanned = match &mut reread {
+            Reread::All { scanned } => scanned.remove(rel),
+            Reread::Changed => None,
+        };
+        let before = match owner_gave(owners, &owner, rel, &rev, bytes, scanned) {
+            Gave::Scanned(file) => std::mem::replace(&mut owned[i], *file),
+            Gave::Given(given) => {
+                let read = given::read(rel, &given, v.item_settings());
+                v.owned[i].take(rev, given, read)
+            }
+            Gave::Failed(message) => {
+                let file = &mut v.owned[i];
+                if file.failed.as_ref() != Some(&rev) {
+                    file.failed = Some(rev);
+                    let path = rel.clone();
+                    events.push(Event::OwnerTrouble {
+                        owner,
+                        path,
+                        message,
+                    });
+                }
+                continue;
+            }
+            Gave::Asked => continue,
+        };
+        let now = &v.owned[i];
+        events.extend(owned_news(Some(&before), Some(now)));
+        if changed.last() != Some(rel) {
+            changed.push(rel.clone());
+        }
     }
-    if rel
-        .components()
-        .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
-    {
-        return Kind::Ignored; // .obsidian, .trash, .git, our own temporary files…
-    }
-    if workspace::is_note_path(rel) {
-        return Kind::Note;
-    }
-    match rel.extension() {
-        Some(e) if e == "canvas" => Kind::Board(rel_s),
-        Some(_) if !path.is_dir() => Kind::File(rel_s),
-        // A path without an extension that isn't a file we know: a folder.
-        None if !path.is_file() => Kind::Folder,
-        _ => Kind::Ignored,
-    }
+    (changed, events)
 }
 
 /// What an owned file leaves out (`Event::OwnedLeavesOut`), when that is news between
@@ -1126,25 +1092,24 @@ fn owner_gave(
     if let Some(given) = owners.kept(owner, rel, rev, &bytes) {
         return Gave::Given(given);
     }
-    let Ok(text) = String::from_utf8(bytes) else {
-        return Gave::Failed("it isn't UTF-8 text".to_string());
-    };
-    match crate::owner::give(owner, rel, &text) {
-        Some(Ok(given)) => Gave::Given(given),
-        Some(Err(message)) => Gave::Failed(message),
-        None => {
-            let read = FileRead {
-                path: rel.to_string(),
-                rev: rev.to_string(),
-                text,
-            };
-            owners.ask(owner, read);
-            Gave::Asked
-        }
+    match crate::owner::give_bytes(owner, rel, &bytes) {
+        Some(Ok(given)) => return Gave::Given(given),
+        Some(Err(message)) => return Gave::Failed(message),
+        None => {}
     }
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Gave::Failed(crate::read::NotText.about("it"));
+    };
+    let read = FileRead {
+        path: rel.to_string(),
+        rev: rev.to_string(),
+        text,
+    };
+    owners.ask(owner, read);
+    Gave::Asked
 }
 
-/// Which owned files `Core::owned_read` reads again.
+/// Which owned files `owned_read` reads again.
 enum Reread {
     /// Those that don't show what their owner gave for the version on disk.
     Changed,
@@ -1165,62 +1130,6 @@ fn owned_bytes(root: &Path, rel: &str) -> Option<Vec<u8>> {
         return None;
     }
     std::fs::read(root.join(rel)).ok()
-}
-
-/// `.obsidian`'s own folder, when `.obsidian` is a symlink to a folder: outside the workspace,
-/// as people link one set of Obsidian settings into several workspaces, or in it. The watch of
-/// the workspace follows no link, so `watch` watches one outside on its own, and `names` names
-/// what is heard in it as under `.obsidian`. Read as the core opens: a link made or removed
-/// later is heard after the next open.
-fn linked_obsidian(root: &Path) -> Option<PathBuf> {
-    let at = root.join(".obsidian");
-    let link = std::fs::symlink_metadata(&at)
-        .ok()?
-        .file_type()
-        .is_symlink();
-    let real = std::fs::canonicalize(&at).ok()?;
-    (link && real.is_dir()).then_some(real)
-}
-
-/// The names in the workspace of `path`, as the watcher reported it: its own, and, when it is
-/// in `obsidian` (the folder a linked `.obsidian` leads to), the same under `.obsidian`, where
-/// only `classify`'s settings files come of it. A path outside the workspace comes to nothing
-/// under its own name; one in a folder of the workspace, as a note there, still does.
-fn names(root: &Path, obsidian: Option<&Path>, path: &Path) -> impl Iterator<Item = PathBuf> {
-    let settings = obsidian.and_then(|o| path.strip_prefix(o).ok());
-    let settings = settings.map(|rest| root.join(".obsidian").join(rest));
-    std::iter::once(path.to_path_buf()).chain(settings)
-}
-
-/// The watcher of the folder at `root` and everything in it, following no symlink, as the scan
-/// doesn't, and of `obsidian` (a linked `.obsidian`'s folder) without what is inside its
-/// folders, when it is outside the workspace: `.obsidian/graph.json` is heard there.
-fn watch(
-    root: &Path,
-    obsidian: Option<&Path>,
-) -> (Option<Receiver<notify::Event>>, Option<RecommendedWatcher>) {
-    let (tx, rx) = mpsc::channel();
-    let heard = move |res: notify::Result<notify::Event>| {
-        if let Ok(ev) = res
-            && !matches!(ev.kind, notify::EventKind::Access(_))
-        {
-            let _ = tx.send(ev);
-        }
-    };
-    let unfollowed = notify::Config::default().with_follow_symlinks(false);
-    let watcher = RecommendedWatcher::new(heard, unfollowed);
-    match watcher {
-        Ok(mut w) => match w.watch(root, RecursiveMode::Recursive) {
-            Ok(()) => {
-                if let Some(obsidian) = obsidian.filter(|o| !o.starts_with(root)) {
-                    let _ = w.watch(obsidian, RecursiveMode::NonRecursive);
-                }
-                (Some(rx), Some(w))
-            }
-            Err(_) => (None, None),
-        },
-        Err(_) => (None, None),
-    }
 }
 
 /// The harness for what subscribers hear, and its tests.
