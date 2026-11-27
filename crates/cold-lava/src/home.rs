@@ -1623,20 +1623,11 @@ impl Home {
                 self.select_path(&path);
             }
             Destination::NewNote(name) => {
-                let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
+                // Another program may have written the link: its name can lead anywhere.
+                let note = self.core.as_ref().and_then(|c| c.index.by_path(from));
+                let Some(path) = self.create_named_note(&name, note) else {
                     return;
                 };
-                // Another program may have written the link: its name can lead anywhere.
-                let new = match files::new_note(ix, &name, ix.by_path(from)) {
-                    Ok(new) => new,
-                    Err(e) => return self.flash(e.to_string()),
-                };
-                let path = new.path().to_path_buf();
-                if let Err(e) = crate::write::create_if_missing(&path, b"") {
-                    return self.flash(format!("couldn't create the note: {e}"));
-                }
-                self.flash(format!("created {}", new.rel()));
-                self.reload_tree();
                 self.leave(here, &path, None);
                 self.show_at(&path, None);
                 self.select_path(&path);
@@ -3311,22 +3302,12 @@ impl Home {
                         .unwrap();
                     self.open_found(from, &path, None);
                 } else if self.offers_create(&q) {
-                    // Same place a new note from a link goes (Obsidian's new-note location
-                    // setting), refused when the name leads out of the workspace.
-                    let new = self.core.as_ref().map(|c| &c.index).map(|ix| {
-                        let from = self.shown.as_ref().and_then(|p| ix.by_path(p));
-                        files::new_note(ix, q.trim(), from)
+                    let note = self.core.as_ref().and_then(|c| {
+                        let shown = self.shown.as_ref()?;
+                        c.index.by_path(shown)
                     });
-                    match new {
-                        Some(Err(e)) => self.flash(e.to_string()),
-                        Some(Ok(new))
-                            if crate::write::create_if_missing(new.path(), b"").is_ok() =>
-                        {
-                            self.flash(format!("created {}", q.trim()));
-                            self.reload_tree();
-                            self.open_found(from, new.path(), None);
-                        }
-                        _ => {}
+                    if let Some(path) = self.create_named_note(&q, note) {
+                        self.open_found(from, &path, None);
                     }
                 }
                 self.back_to_editor = false;
@@ -4546,23 +4527,10 @@ impl Home {
                 self.ask_delete(paths, false, Some(view));
             }
             tidy_view::Action::Create { target, from } => {
-                let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
-                    return;
-                };
-                let new = match files::new_note(ix, &target, ix.by_rel(&from)) {
-                    Ok(new) => new,
-                    Err(e) => {
-                        self.mode = Mode::Tidy(view);
-                        return self.flash(e.to_string());
-                    }
-                };
-                let created = crate::write::create_if_missing(new.path(), b"");
-                self.reload_tree();
-                self.show_tidy(view);
-                let rel = new.rel();
-                match created {
-                    Ok(_) => self.flash(format!("created {rel}")),
-                    Err(e) => self.flash(format!("couldn't create {rel}: {e}")),
+                let note = self.core.as_ref().and_then(|c| c.index.by_rel(&from));
+                match self.create_named_note(&target, note) {
+                    Some(_) => self.show_tidy(view),
+                    None => self.mode = Mode::Tidy(view),
                 }
             }
         }
@@ -5433,11 +5401,18 @@ impl Home {
         if path.extension().is_none_or(|x| x != "md") {
             return Err(format!("{note} isn't a note"));
         }
+        // A note that isn't there yet is new: it goes only where a new note may. One that is
+        // there may have a name a new one couldn't (`#` in it).
+        match files::new_path(&root, note) {
+            Ok(new) => {
+                crate::write::create_if_missing(new.path(), b"").map_err(|e| e.to_string())?;
+            }
+            Err(e) if !path.is_file() => return Err(e.message),
+            Err(_) => {}
+        }
         self.hide_scene();
         let _ = self.hide_picture();
-        let edited = crate::write::create_if_missing(&path, b"")
-            .map_err(|e| e.to_string())
-            .and_then(|_| term::edit_file(terminal, &path, &root).map_err(|e| e.to_string()))?;
+        let edited = term::edit_file(terminal, &path, &root).map_err(|e| e.to_string())?;
         if let Some(err) = edited {
             self.flash(err);
         }
@@ -5541,6 +5516,29 @@ impl Home {
             self.show(path);
             self.focus_pane();
         }
+    }
+
+    /// Make the empty note `name` names, from note `from`, where a new note goes
+    /// (`files::new_note`), unless it is there, and say so by the name it got: the switcher's
+    /// create, a link followed to a note that isn't there, and tidy's create. The note's path
+    /// once it is there.
+    fn create_named_note(&mut self, name: &str, from: Option<usize>) -> Option<PathBuf> {
+        let new = files::new_note(&self.core.as_ref()?.index, name, from);
+        let new = match new {
+            Ok(new) => new,
+            Err(e) => {
+                self.flash(e.to_string());
+                return None;
+            }
+        };
+        let rel = new.rel();
+        if let Err(e) = crate::write::create_if_missing(new.path(), b"") {
+            self.flash(format!("couldn't create {rel}: {e}"));
+            return None;
+        }
+        self.flash(format!("created {rel}"));
+        self.reload_tree();
+        Some(new.path().to_path_buf())
     }
 
     /// Where new notes and folders go: the selected folder, or the selected note's, in the

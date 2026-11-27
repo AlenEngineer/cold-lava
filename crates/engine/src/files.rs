@@ -314,45 +314,41 @@ pub fn replace(root: &Path, rel: &str, text: &str, expect: &str) -> Result<Writt
     })
 }
 
-/// `workspace/create`, through `write::create`.
+/// `workspace/create`, through `write::create`, at a `NewPath`.
 pub fn create(index: &Index, c: &Create) -> Result<Created, Error> {
     let root = &index.workspace.root;
-    let rel = match &c.at {
-        NewFile::At { path } => normal(path)?,
+    let new = match &c.at {
+        NewFile::At { path } => new_path(root, path)?,
         NewFile::Named { name, extension } => {
             let bad = extension.is_empty() || extension.contains(['/', '.', '\\']);
             if bad || name.trim().is_empty() {
                 let message = format!("{name:?} with extension {extension:?} can't name a file");
                 return Err(Error::new(Reason::Refused, message));
             }
-            free_name(index, name.trim(), extension)
+            free_name(index, name.trim(), extension)?
         }
     };
-    let path = resolve(root, &rel)?;
-    write::create(&path, c.text.as_bytes()).map_err(written(root, &rel))?;
+    let rel = new.rel();
+    write::create(new.path(), c.text.as_bytes()).map_err(written(root, rel))?;
     Ok(Created {
-        path: rel,
+        path: rel.to_string(),
         rev: rev(c.text.as_bytes()),
     })
 }
 
-/// Where a new `name.extension` goes, as workspace-relative path: the first of `name`,
-/// `name 1`, `name 2`, … that is free, as Obsidian numbers a new file.
-fn free_name(index: &Index, name: &str, extension: &str) -> String {
-    let root = &index.workspace.root;
-    let relative = |p: PathBuf| {
-        let rel = p.strip_prefix(root).map(Path::to_path_buf).unwrap_or(p);
-        rel.to_string_lossy().replace('\\', "/")
-    };
+/// Where a new `name.extension` goes: the first of `name`, `name 1`, `name 2`, … that is
+/// free, as Obsidian numbers a new file. Each is checked (`new_file`) before it is asked
+/// whether something is there, so a refusal never tells what is outside the workspace.
+fn free_name(index: &Index, name: &str, extension: &str) -> Result<NewPath, Error> {
     let mut n = 0;
     loop {
         let candidate = match n {
             0 => name.to_string(),
             n => format!("{name} {n}"),
         };
-        let path = crate::resolver::new_file_path(index, &candidate, extension, None);
-        if !write::taken(&path) {
-            return relative(path);
+        let new = new_file(index, &candidate, extension, None)?;
+        if !write::taken(new.path()) {
+            return Ok(new);
         }
         n += 1;
     }
@@ -480,21 +476,41 @@ pub fn new_path(root: &Path, rel: &str) -> Result<NewPath, Error> {
     Ok(NewPath { rel, path })
 }
 
-/// Where a new note named `name` goes (`resolver::new_note_path`: the folder its name names,
-/// else Obsidian's new-note location), as a `NewPath`. A name that leads out of the workspace
-/// (`..`, an absolute path) is refused.
+/// Where a new note named `name` goes, as a `NewPath` (`new_file`).
 pub fn new_note(index: &Index, name: &str, from: Option<usize>) -> Result<NewPath, Error> {
+    new_file(index, name.trim().trim_end_matches(".md"), "md", from)
+}
+
+/// Where a new `name.extension` goes (`resolver::new_file_path`: the folder its name names,
+/// else Obsidian's location for new files), as a `NewPath`. A name that leads out of the
+/// workspace (`..`, an absolute path) is refused, and so is Obsidian's folder for new files
+/// when it would, naming the setting. `\` is part of a name, as the new-note prompt reads it.
+pub fn new_file(
+    index: &Index,
+    name: &str,
+    extension: &str,
+    from: Option<usize>,
+) -> Result<NewPath, Error> {
     let root = &index.workspace.root;
-    let path = crate::resolver::new_note_path(index, name, from);
-    let rel = path.strip_prefix(root).ok().and_then(Path::to_str);
-    let Some(rel) = rel else {
-        let message = format!(
-            "{}: a path relative to the workspace is needed",
-            name.trim()
-        );
-        return Err(Error::new(Reason::Refused, message));
+    if let Some(folder) = crate::resolver::new_file_folder(index, name)
+        && !folder.is_empty()
+    {
+        new_path(root, &folder).map_err(|e| {
+            let message = format!(
+                "the folder for new files (newFileFolderPath) in .obsidian/app.json is refused: {}",
+                e.message
+            );
+            Error::new(Reason::Refused, message)
+        })?;
+    }
+    let path = crate::resolver::new_file_path(index, name, extension, from);
+    let rel = match (path.parent(), path.file_name()) {
+        (Some(folder), Some(file)) => {
+            crate::resolver::join(&rel_path::or_whole(root, folder), &file.to_string_lossy())
+        }
+        _ => rel_path::or_whole(root, &path),
     };
-    new_path(root, &rel.replace('\\', "/"))
+    new_path(root, &rel)
 }
 
 /// How many deletes of one client the core keeps tokens for.

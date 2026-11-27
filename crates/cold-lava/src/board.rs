@@ -308,6 +308,8 @@ pub struct Picker {
     query: String,
     /// The chosen row: one of the boards the query keeps, or the new board after them.
     pos: usize,
+    /// Why the new board the query names can't be made, until the next key.
+    refused: Option<Notice>,
 }
 
 impl Picker {
@@ -332,6 +334,7 @@ impl Picker {
             boards,
             query: String::new(),
             pos: 0,
+            refused: None,
         }
     }
 
@@ -352,7 +355,10 @@ impl Picker {
     }
 
     /// A key. `Some` once the picker is done: the board to open, or `None` when it was left.
+    /// A new board goes only where a new file may (`files::new_path`); one that can't stays
+    /// in the picker, saying why.
     pub fn on_key(&mut self, k: KeyEvent) -> Option<Option<PathBuf>> {
+        self.refused = None;
         match k.code {
             KeyCode::Esc => return Some(None),
             KeyCode::Up => self.pos = self.pos.saturating_sub(1),
@@ -362,11 +368,14 @@ impl Picker {
                 self.pos = 0;
             }
             KeyCode::Enter => {
-                let rel = match self.hits().get(self.pos) {
-                    Some(hit) => hit.to_string(),
-                    None => format!("{}.canvas", self.new_name()),
-                };
-                return Some(Some(self.root.join(rel)));
+                if let Some(hit) = self.hits().get(self.pos) {
+                    return Some(Some(self.root.join(hit)));
+                }
+                let rel = format!("{}.canvas", self.new_name());
+                match crate::files::new_path(&self.root, &rel) {
+                    Ok(new) => return Some(Some(new.path().to_path_buf())),
+                    Err(e) => self.refused = Some(e.to_string().into()),
+                }
             }
             KeyCode::Char(c) => {
                 self.query.push(c);
@@ -380,7 +389,7 @@ impl Picker {
     /// Draws it in the middle of the screen, over what is drawn there.
     pub fn draw(&self, f: &mut Frame) {
         let hits = self.hits();
-        let total = hits.len() + 1;
+        let total = hits.len() + 1 + self.refused.is_some() as usize;
         let area = centered(
             f.area(),
             64,
@@ -410,6 +419,9 @@ impl Picker {
             format!("  + new board \"{}.canvas\"  ", self.new_name()),
             st,
         ));
+        if let Some(refused) = &self.refused {
+            lines.push(Line::styled(format!("  {refused}"), Style::new().fg(MUTED)));
+        }
         f.render_widget(Clear, area);
         f.render_widget(
             Paragraph::new(lines).block(
