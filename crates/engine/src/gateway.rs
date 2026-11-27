@@ -1369,6 +1369,80 @@ fields.text = { rest = true }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The tasks of `Bills.md`.
+    fn in_bills() -> Select {
+        let filter = Filter {
+            note: Some("Bills.md".into()),
+            ..Filter::default()
+        };
+        select("task", filter)
+    }
+
+    /// Twins (#327): three tasks with the same words are the first, second and third of them,
+    /// so with one gone, the second holds the first's address and the third the second's. No
+    /// one can tell which of three like lines went, so an edit held by the first's id and rev
+    /// is refused as changed, before the core reads the note again and after, and nothing is
+    /// written. A subscriber hears that the two left changed.
+    #[test]
+    fn an_edit_held_by_a_twins_address_is_refused_once_a_twin_is_gone() {
+        let dir = workspace("twins");
+        let bills = dir.join("Bills.md");
+        std::fs::write(&bills, "- [ ] Pay rent\n- [ ] Pay rent\n- [ ] Pay rent\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        core.subscribe_items("agenda", in_bills()).unwrap();
+        let found = core.query_items(&all(in_bills())).unwrap().items;
+        assert_eq!(found.len(), 3);
+        let first = &found[0];
+        let two = "- [ ] Pay rent\n- [ ] Pay rent\n";
+        std::fs::write(&bills, two).unwrap();
+        let held = [
+            tick(first),
+            set(first, "due", json!("2026-12-01")),
+            anchor(first),
+        ];
+        let refused = |core: &mut Core, when: &str| {
+            for edit in &held {
+                let e = match now(core.edit_item("agenda", edit)) {
+                    Ok(done) => panic!("{when}, {edit:?} landed on a twin: {done:?}"),
+                    Err(e) => e,
+                };
+                assert_eq!(e.reason, Reason::Changed, "{when}, {edit:?}: {e}");
+                let text = std::fs::read_to_string(&bills).unwrap();
+                assert_eq!(text, two, "{when}, {edit:?}: nothing written");
+            }
+        };
+        refused(&mut core, "before the core read the note again");
+        core.note_changed_now(&bills);
+        let news = core.take_item_news();
+        assert_eq!(counts(&news), [(0, 2, 1)], "{news:?}");
+        refused(&mut core, "after");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Anchored, the first of three twins is keyed by its anchor and is a twin no more, so the
+    /// second takes its address and the third the second's (#327): an edit held by either old
+    /// address is refused, and nothing is written.
+    #[test]
+    fn an_edit_held_by_a_twins_address_is_refused_once_the_first_is_anchored() {
+        let dir = workspace("twins-anchored");
+        let bills = dir.join("Bills.md");
+        std::fs::write(&bills, "- [ ] Pay rent\n- [ ] Pay rent\n- [ ] Pay rent\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let found = core.query_items(&all(in_bills())).unwrap().items;
+        let anchored = now(core.edit_item("binder", &anchor(&found[0]))).unwrap();
+        assert_ne!(anchored.item.id, found[0].id, "keyed by its anchor");
+        let text = std::fs::read_to_string(&bills).unwrap();
+        for held in &found[..2] {
+            let e = match now(core.edit_item("agenda", &tick(held))) {
+                Ok(done) => panic!("line {}'s tick landed on a twin: {done:?}", held.line),
+                Err(e) => e,
+            };
+            assert_eq!(e.reason, Reason::Changed, "line {}: {e}", held.line);
+            assert_eq!(std::fs::read_to_string(&bills).unwrap(), text);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A name is written only where it appears nowhere yet: not in a note's text (a link to
     /// it, a mention), nor in what an owner gave (a whiteboard card's `subpath`). The first
     /// name of "plain item" is `79el6x`, its next `3ckj6e` (`identity`'s tests).

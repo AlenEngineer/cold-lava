@@ -66,7 +66,22 @@ pub fn anchor(address: &str, attempt: u32) -> String {
 /// text (a piece or a typed item an owner gave, an item as its answer wrote it). Line breaks
 /// and carriage returns at its end are not hashed.
 pub fn line_id(line: &str) -> String {
-    let h = fnv(line.trim_end_matches(['\r', '\n']).as_bytes());
+    rev(fnv(line.trim_end_matches(['\r', '\n']).as_bytes()))
+}
+
+/// The rev of a note's item that one of its twins could be taken for (`items::twins`, #327):
+/// of the rev of its lines, how many there are of it and its twins and, when the item it is
+/// under has twins too, that item's rev, with a NUL between each two, in `line_id`'s form.
+pub fn twin_rev(rev_of_lines: &str, twins: usize, under: Option<&str>) -> String {
+    let twins = twins.to_string();
+    rev(match under {
+        Some(under) => of_parts(&[rev_of_lines, &twins, under]),
+        None => of_parts(&[rev_of_lines, &twins]),
+    })
+}
+
+/// 48 bits of a hash, as 12 hex digits: a rev.
+fn rev(h: u64) -> String {
     format!("{:012x}", h & 0xffff_ffff_ffff)
 }
 
@@ -117,5 +132,18 @@ mod tests {
             line_id("- [ ] Block id 📅 2026-11-12 ^rent\r\n"),
             "00c0a9b28be7"
         );
+    }
+
+    /// Each rev is computed apart from this module.
+    #[test]
+    fn a_twins_rev_is_derived_from_its_lines_its_twins_and_what_it_is_under() {
+        let rent = line_id("- [ ] Pay rent");
+        assert_eq!(rent, "022115ba59e3");
+        assert_eq!(twin_rev(&rent, 3, None), "00121f818752");
+        assert_eq!(twin_rev(&rent, 2, None), "01121f818905");
+        let transfer = line_id("  - [ ] Transfer");
+        let under = line_id("- [ ] Rent 📅 2026-11-01");
+        assert_eq!((&*transfer, &*under), ("69ec5d6b8a55", "06886ce81dcb"));
+        assert_eq!(twin_rev(&transfer, 2, Some(&under)), "1216e37efa72");
     }
 }
