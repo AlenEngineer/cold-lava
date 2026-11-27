@@ -173,19 +173,20 @@ pub fn create_if_missing(path: &Path, bytes: &[u8]) -> Result<bool, WriteError> 
     }
 }
 
-/// Create a new, empty folder (and any missing parents); refused if it already exists.
+/// Create a new, empty folder (and any missing parents); refused if something is already
+/// there (`taken`).
 pub fn create_dir(path: &Path) -> Result<(), WriteError> {
-    if path.exists() {
+    if taken(path) {
         return Err(WriteError::Exists(path.to_path_buf()));
     }
     std::fs::create_dir_all(path).map_err(io_err(path))
 }
 
-/// Move a file or folder, refusing to overwrite an existing one (except a case-only rename of itself).
+/// Move a file, a folder or a symlink (the link itself); refused if something is at `to`
+/// (`taken`), except a case-only rename of itself.
 pub fn move_file(from: &Path, to: &Path) -> Result<(), WriteError> {
-    let same_file_case_change =
-        to.exists() && from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
-    if to.exists() && !same_file_case_change {
+    let case_only = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
+    if taken(to) && !case_only {
         return Err(WriteError::Exists(to.to_path_buf()));
     }
     if let Some(dir) = to.parent() {

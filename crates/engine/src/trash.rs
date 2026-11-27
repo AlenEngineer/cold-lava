@@ -6,7 +6,7 @@
 //! the file (none on this platform, or it is on another disk), it goes to `.trash` too.
 
 use crate::read::Seen;
-use crate::write::{WriteError, move_file};
+use crate::write::{WriteError, move_file, taken};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -123,7 +123,7 @@ fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
                 let candidate = suffixed(&name, n);
                 let info = infos.join(format!("{candidate}.trashinfo"));
                 let at = files.join(&candidate);
-                if at.exists() {
+                if taken(&at) {
                     continue;
                 }
                 let mut f = match std::fs::File::create_new(&info) {
@@ -166,7 +166,7 @@ pub fn restore(t: &Trashed, to: &Path) -> Result<(), WriteError> {
     Ok(())
 }
 
-/// `path`, or the first of `name 1.ext`, `name 2.ext`… that doesn't exist.
+/// `path`, or the first of `name 1.ext`, `name 2.ext`… that nothing is at (`write::taken`).
 pub fn free_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
@@ -174,7 +174,7 @@ pub fn free_path(path: &Path) -> PathBuf {
         .unwrap_or_default();
     (0..)
         .map(|n| path.with_file_name(suffixed(&name, n)))
-        .find(|p| !p.exists())
+        .find(|p| !taken(p))
         .unwrap()
 }
 

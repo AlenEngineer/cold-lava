@@ -351,7 +351,7 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
 /// taken.
 pub fn undo(m: &Merged) -> Result<()> {
     m.written.check("merge")?;
-    if m.source_path.exists() {
+    if write::taken(&m.source_path) {
         bail!(
             "{} exists again; the merge can't be undone",
             m.source_path.display()
