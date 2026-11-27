@@ -238,8 +238,9 @@ impl Core {
     /// what the canvas owner gives for it, so a canvas whose version that read is taken from it
     /// rather than parsed again (`Reread::All`); the index is linked once, after the owned
     /// files are read. What a rescan costs beyond main's before #363 is one more walk of the
-    /// workspace for the owned files and a read of each one's bytes (PR #416 states the
-    /// measurement).
+    /// workspace for the owned files and a read of each one's bytes: measured on 2026-11-27
+    /// (PR #416) at about +35 ms of CPU a rescan, within noise from -10 to +72 ms, on 3,300
+    /// notes with or without 100 boards of 30 cards, against 380 to 520 ms for the rescan.
     fn rescanned(&mut self, scanned: Workspace) -> Vec<Event> {
         let mut index = Index::unlinked(scanned);
         let canvases = std::mem::take(&mut index.workspace.owned);
