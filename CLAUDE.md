@@ -727,41 +727,14 @@ shares them, and the Obsidian ones are that profile's:
 
 ## Workflow
 
-- **No direct pushes to `main`**: a ruleset requires a PR with `ubuntu-latest`, `release check`
-  and `changelog` passing. Tags `v*` can't be deleted or moved.
-- One branch per feature. Work spanning several features goes in a **GitHub native stacked PR**
-  (https://docs.github.com/en/pull-requests/how-tos/stacked-pull-requests), using the
-  `gh stack` extension: `gh stack init`, `gh stack add BRANCH`, `gh stack submit` (or
-  `gh stack link branch1 branch2 …` for branches made with plain git, bottom first). Merging the
-  top PR merges the whole stack; `gh stack rebase` / **Rebase stack** restores linear history.
-- **A refactor and the feature it makes room for go in one stack, the refactor at the
-  bottom.** The refactor PR is behaviour-identical and is checked against `main` (byte for
-  byte); the feature PR on top is checked against the refactor and declares what it changes.
-  The bottom can merge alone. Never the other way round for existing code. When a review
-  finds that a feature's own new code needs reshaping, that is further commits on the same
-  PR. Keep stacks to two or three PRs, one track step per refactor PR. A pushed branch is
-  never rebased or force-pushed: bring a lower PR's changes up with an ordinary merge commit.
-- Every user-visible change adds an entry under `## [Unreleased]` in `CHANGELOG.md`, and the
-  README is updated with it. The `changelog` check (`scripts/changelog-check.sh`) fails a PR
-  that changes `crates/` or `examples/extensions/` without touching `CHANGELOG.md` (a release PR
-  changes it anyway); a refactor or a tests-only change there carries the `no-changelog` label
-  instead. It also fails a PR that adds a `CHANGELOG.md` line outside `## [Unreleased]`, naming
-  the line and its section: after a release, a merge of main into an open PR can slide its entry
-  into the released section, where it is never seen. A release PR (`scripts/release-check.sh`
-  says whether a commit is one) may add lines under its own new `## [x.y.z]` heading, and under
-  no older one. A PR that edits a released section on purpose (a typo, a correction) carries the
-  `changelog-edit` label; `no-changelog` never lifts this rule. `scripts/changelog-check-test.sh`
-  runs the cases on scratch repos. The check doesn't look at the README half of this rule.
-- **Releases are automatic**: a PR that sets a new `version` in `Cargo.toml` (`[workspace.package]`) and moves the
-  Unreleased entries into `## [x.y.z] - date` makes `.github/workflows/release.yml` tag the merge
-  commit, build Linux binaries (x86-64 and ARM) and publish the release. Before 1.0, minor = may break,
-  patch = fixes only.
-- Commit messages: a short summary line, then what changed and why.
-- **Two reviews before a merge, by two different agents.** One checks behaviour (CI's
-  binaries against main's, trying to break the claim). The other checks design: the
-  `design-reviewer` agent (`.claude/agents/design-reviewer.md`), which reads the diff against
-  `docs/foundations.md` and runs nothing. Neither is the PR's author. A design finding marked
-  "must fix" blocks the merge as a behaviour finding does.
+`CONTRIBUTING.md` is how a change gets merged, and the `ship` skill
+(`.claude/skills/ship/SKILL.md`) runs it. In short: one request is one PR, squash-merged; a
+refactor a feature needs is its own PR, merged first; the PR title is the line the release
+notes are written from; two reviews by two agents other than the author (behaviour, and the
+`design-reviewer` agent), where a must-fix from either blocks the merge; merge when CI is
+green and the reviews are clean, asking the owner first for the shared-files code, a release
+or a change to the process. A pushed branch is never rebased or force-pushed. Releases are
+automatic once a PR sets a new `version` (CONTRIBUTING.md, "Releases").
 
 ## Testing the UI
 

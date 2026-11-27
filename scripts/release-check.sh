@@ -14,8 +14,7 @@
 #   scripts/release-check.sh [COMMIT]
 #
 # With a COMMIT it reads Cargo.toml and CHANGELOG.md as that commit has them, not the working
-# tree: scripts/changelog-check.sh asks it whether a PR's head is a release, so there is one
-# definition of one.
+# tree.
 set -euo pipefail
 
 ref=${1:-}
