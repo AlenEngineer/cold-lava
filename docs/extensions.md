@@ -120,7 +120,11 @@ then a query and a view, not a parser of its own.
   one comes or goes, the next takes its address. A twin whose lines another twin has too hashes
   how many twins there are as well, and, under a twin, which twin it is under, so an edit held by
   an address another twin took is refused as `changed` and doesn't land on it
-  (`items/twins.rs`, #327). The core adds a `^id` only when asked to keep a reference to an
+  (`items/twins.rs`, #327). Two limits: a change that keeps the count and the lines keeps the
+  revs, so twins with the same lines and different items under them, moved past each other,
+  swap addresses unrefused (an anchor is what holds one item); and an edit to one twin changes
+  the revs of the twins with its lines, so a client that edits two of them reads again between
+  the two edits, or the second is refused. The core adds a `^id` only when asked to keep a reference to an
   item ("Anchors, as built").
 - **Reading.** `items/query` takes a `kind` and a fixed filter (notes under a folder or with a
   tag, status, a date range on `due`, `scheduled`, `start`, `done` or `agenda`, text, a property

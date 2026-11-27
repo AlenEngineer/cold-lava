@@ -92,7 +92,8 @@ one can't break anything.
 `items.rs`, `cold-lava items`; queries, subscriptions and edits are built in-process:
 `gateway.rs`, extensions.md, "The workspace gateway, as built")*. What the types find: typed
 values with an `id` that survives ticking, re-dating and lines added above,
-and a `rev` for the item's own lines (and, for identical twins, how many there are). That id is an *address*: it says where the item is now,
+and a `rev` for the item's own lines (and, for identical twins, how many there are, so an edit
+to one twin makes the others' revs stale too). That id is an *address*: it says where the item is now,
 and it changes when the item is reworded or its note moves, so nothing that outlives a session
 keeps it. An *anchor* is a `^name` the engine writes into the note the first time something
 keeps a reference to the item (`items/edit`'s `anchor`; extensions.md, "Anchors, as built").

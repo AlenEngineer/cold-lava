@@ -9,6 +9,15 @@
 //! (`identity::twin_rev`): such an edit is refused as changed. Every other item keeps the rev
 //! of its lines, a twin whose lines tell it apart included. A leaf: it reads what each anchor
 //! is made of and the revs, and says nothing to anyone.
+//!
+//! What it can't tell apart: a change that keeps the count and the lines keeps the revs, so an
+//! address can change hands unrefused. One write that removes a twin and adds another with the
+//! same lines does that, and so does a reorder: two `- [ ] Shop` tasks with different items
+//! under them, moved past each other by another program, keep their revs, and an edit held by
+//! the first lands on the one now first. What keeps a reference to one item is its anchor.
+//! And an edit to one twin changes the count of those with its lines, so the other twins' revs
+//! change too: a client that read once and edits two twins is refused on the second, and reads
+//! again between them.
 
 use std::collections::HashMap;
 
