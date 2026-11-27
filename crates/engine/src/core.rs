@@ -243,7 +243,7 @@ impl Core {
     fn rescanned(&mut self, scanned: Workspace) -> Vec<Event> {
         let mut index = Index::unlinked(scanned);
         let canvases = std::mem::take(&mut index.workspace.owned);
-        index.workspace.owned = std::mem::replace(&mut self.index, index).workspace.owned;
+        self.index.workspace.owned = std::mem::replace(&mut self.index, index).workspace.owned;
         self.changed.clear();
         let scanned = canvases.into_iter().map(|f| (f.rel.clone(), f)).collect();
         let (_, events) = self.owned_scan(Reread::All { scanned });
