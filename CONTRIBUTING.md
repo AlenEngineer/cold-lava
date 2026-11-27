@@ -21,12 +21,8 @@ Agents run the whole sequence below with the `ship` skill (`.claude/skills/ship/
    blocks the merge. Fixes are new commits on the same PR, and both reviews run again. A
    pushed branch is never rebased or force-pushed; bring `main` in with a merge commit.
    Should-fix items become issues on #100.
-5. **Merge** with a squash once CI is green and both reviews have no must-fix. Ask the owner
-   first when the PR:
-   - changes the shared-files code: `crates/engine/src/write.rs`, `trash.rs`, `read.rs`,
-     `files.rs` or `gateway.rs`;
-   - is a release (it sets a new `version` in `Cargo.toml`);
-   - changes `.github/`, this file, or the ship skill.
+5. **Merge** with a squash once CI is green and both reviews have no must-fix. No one else
+   has to approve it. The owner can say "hold" on any PR, and then it waits.
 
 ## Releases
 
