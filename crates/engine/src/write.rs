@@ -7,14 +7,18 @@
 //! the new file goes in by a swap or a rename that never replaces (`os_rename`), and what came
 //! out is checked.
 
+mod kept;
 mod lock;
+mod name;
 mod os_rename;
 mod replace;
+mod stale;
 
 use std::fmt;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+
+use name::{beside, reserved};
 
 #[derive(Debug)]
 pub enum WriteError {
@@ -22,7 +26,7 @@ pub enum WriteError {
     Changed(PathBuf),
     /// Another write landed at the path (the first) while this one was under way, and a text
     /// taken out of the file couldn't be put back: it is kept in the second path, a hidden
-    /// file beside it named `.Name.cold-lava-kept-…` (`replace::kept_name`). It is never the
+    /// file beside it named `.Name.cold-lava-kept-…` (`kept::kept_name`). It is never the
     /// caller's own old text or this write's. Read the file again: this write may or may not
     /// be in it. Not "read again" alone: a text now sits outside the file (gateway `kept`).
     Kept(PathBuf, PathBuf),
@@ -170,9 +174,14 @@ fn folder_made(file: &Path) -> Result<(), WriteError> {
 }
 
 /// A new file beside `file` holding `bytes`, on disk and with `file`'s permissions: what a
-/// write renames into place. It makes no folder: one that isn't there is `Io`. Errors name
-/// `path`.
+/// write renames into place. It makes no folder: one that isn't there is `Io`. The first one
+/// in a folder clears what dead cold-lavas' saves left staged there (`stale::once`): here,
+/// where every write stages, so no write can forget it, and before `replace` takes its turn
+/// on the folder, which the clearing takes too. Errors name `path`.
 fn staged(path: &Path, file: &Path, bytes: &[u8]) -> Result<PathBuf, WriteError> {
+    if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
+        stale::once(dir);
+    }
     let new = reserved(file, beside).map_err(io_err(path))?;
     let mut f = std::fs::OpenOptions::new()
         .write(true)
@@ -184,28 +193,6 @@ fn staged(path: &Path, file: &Path, bytes: &[u8]) -> Result<PathBuf, WriteError>
         let _ = std::fs::set_permissions(&new, meta.permissions());
     }
     Ok(new)
-}
-
-/// A new, empty file beside `file`, at the first name `name` gives where nothing is
-/// (`create_new`): a name no other file has, so only this write ever writes over it.
-fn reserved(file: &Path, name: fn(&Path) -> PathBuf) -> io::Result<PathBuf> {
-    loop {
-        let at = name(file);
-        match std::fs::File::create_new(&at) {
-            Ok(_) => return Ok(at),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    }
-}
-
-/// A staged write's name beside `file`: hidden, so file watchers (ours and Obsidian's) ignore
-/// it, and new each time this process asks (`reserved` makes sure no one else has it).
-fn beside(file: &Path) -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let name = file.file_name().unwrap_or_default().to_string_lossy();
-    file.with_file_name(format!(".{name}.cold-lava-{}-{n}.tmp", std::process::id()))
 }
 
 /// `e`, once the file `staged` made is removed: it holds only this write's bytes.
@@ -408,7 +395,8 @@ pub(crate) mod lands {
 
 #[cfg(test)]
 mod tests {
-    use super::replace::{Hooks, aside, checked, keep, put_back};
+    use super::kept::keep;
+    use super::replace::{Hooks, aside, checked, put_back};
     use super::*;
     use std::time::Duration;
 
