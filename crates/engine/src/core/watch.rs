@@ -39,10 +39,11 @@ impl Watch {
             return Vec::new();
         };
         let obsidian = self.linked_obsidian.as_deref();
-        (rx.try_iter())
-            .flat_map(|ev| ev.paths)
-            .flat_map(|p| named(&self.root, obsidian, &p))
-            .collect()
+        let mut paths = Vec::new();
+        for path in rx.try_iter().flat_map(|ev| ev.paths) {
+            paths.extend(named(&self.root, obsidian, &path));
+        }
+        paths
     }
 
     /// Hear only what is sent on `heard` from now on, instead of the folder: the news harness
