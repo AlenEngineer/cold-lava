@@ -282,6 +282,24 @@ fn a_note_the_switcher_creates_out_of_the_workspace_is_refused() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The switcher's create says the name it made, reads `\` as part of a name, as the new-note
+/// prompt does, and says why a note can't be made (#422).
+#[cfg(unix)]
+#[test]
+fn the_switcher_says_which_note_it_created() {
+    let dir = sandbox("switcher-create");
+    let out = drive("switcher-create.drive", &dir);
+    assert_passed(&out);
+    let workspace = dir.join("example-workspace");
+    assert!(workspace.join("Zqxjw.md").is_file());
+    assert!(
+        workspace.join("Zq\\xjw.md").is_file(),
+        "a backslash is part of the name"
+    );
+    assert!(!workspace.join("Zq").exists(), "not a folder");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A link another program wrote can lead out of the workspace (`[[../../Escaped]]`) or name a
 /// hidden note (`[[Nothing.csv/]]`, #331): following it, or tidy's create on it, refuses the
 /// note (#421).
@@ -2184,6 +2202,22 @@ fn esc_in_the_board_picker_on_its_own_makes_no_board() {
             workspace.join("Welcome.canvas")
         ]
     );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The board picker's new board goes only where a new file may (#422): a name that leads out
+/// of the workspace is refused, and nothing is written beside it.
+#[test]
+fn the_board_picker_makes_no_board_out_of_the_workspace() {
+    let dir = sandbox("board-picker-escape");
+    // `../../Escaped.canvas` from the workspace's root is beside the sandbox, not in it.
+    let beside = dir.parent().unwrap().join("Escaped.canvas");
+    let _ = std::fs::remove_file(&beside);
+    let out = drive_board("board-picker-escape.drive", &dir);
+    let escaped = beside.exists();
+    let _ = std::fs::remove_file(&beside);
+    assert_passed(&out);
+    assert!(!escaped, "Escaped.canvas was written beside the sandbox");
     let _ = std::fs::remove_dir_all(dir);
 }
 

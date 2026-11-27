@@ -1,0 +1,12 @@
+# A new board the picker would make out of the workspace (`..` in its name) is refused, and
+# the picker stays open (#422). tests/drive.rs checks nothing was written outside the
+# workspace.
+size 140x30
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type ../../Escaped
+wait-for + new board "../../Escaped.canvas"
+keys enter
+wait-for ../../Escaped.canvas: a path can't have
+expect whiteboards · type to filter · ⏎ open · Esc back
+keys esc
+exits 0
