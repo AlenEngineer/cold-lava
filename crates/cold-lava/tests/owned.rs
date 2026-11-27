@@ -734,7 +734,7 @@ fn an_owners_place_is_never_printed_as_written() {
         stdout,
         "{\"error\":\"chores's new text for Home.chores doesn't read back as asked \
          (\\u001b]0;PWNED-place\\u0007p: another piece is at this place was left out, and came \
-         back changed, moved or not at all); nothing was written\",\"changed\":false}\n"
+         back changed, moved or not at all); nothing was written\",\"changed\":false,\"kept\":false}\n"
     );
     // A chore beside the left-out one is ticked (#257), and every other line keeps its bytes.
     let ok = chore("fine");
