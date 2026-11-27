@@ -38,13 +38,11 @@ pub enum EditError {
     /// is kept beside it (`write::WriteError::Kept`): the words name where.
     Kept(String),
     /// A block id would be lost, moved or made (`items::anchors`): words for the person, which
-    /// say why and what to do. It is a `read-back` on the wire.
+    /// say why and what to do. It is a `read-back` on the wire, and a `read-back` the gateway
+    /// gave comes back as one (`From<gateway::Error>`), its words shown as they are.
     Anchor(String),
     Io(String),
 }
-
-/// The words a `ReadBack` is said after.
-pub(crate) const READ_BACK: &str = "refused, the note would not read back: ";
 
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -54,7 +52,7 @@ impl fmt::Display for EditError {
             | EditError::Refused(m)
             | EditError::Anchor(m)
             | EditError::Io(m) => f.write_str(m),
-            EditError::ReadBack(m) => write!(f, "{READ_BACK}{m}"),
+            EditError::ReadBack(m) => write!(f, "refused, the note would not read back: {m}"),
         }
     }
 }

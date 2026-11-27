@@ -4,8 +4,10 @@
 //! under a name of its own (`kept_name`) and names (`WriteError::Kept`).
 //!
 //! The rule throughout: the engine deletes only its own staged bytes, or a text it took out that
-//! is exactly what the caller read (`expected`) or what the path holds as it is deleted. And a
-//! text is never put back over a newer one: every swap checks what came out (`put_back`).
+//! is exactly what the caller read (`expected`) or what the path holds as it is deleted. Every
+//! swap checks what came out, and a text put back over a newer one is swapped out again
+//! (`put_back`). Where that can't go on (a writer that doesn't stop, a swap that fails), the
+//! path may hold an older text: the newer one is never removed then, but kept beside it, named.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -14,8 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::{WriteError, beside, io_err, os_rename, reserved, staged, unstaged};
 
 /// Where a test lands another write in `checked`: after the compare (`compared`), and after the
-/// swap took out another write's text, before it goes back (`swapped`). The engine's own
-/// writes pass two closures that do nothing.
+/// swap took out another write's text, before each round that puts one back (`swapped`, with
+/// the round's number, from 0). The engine's own writes pass two closures that do nothing.
 pub(super) struct Hooks<A, B> {
     pub compared: A,
     pub swapped: B,
@@ -35,7 +37,7 @@ pub(super) fn checked(
     file: &Path,
     expected: &[u8],
     bytes: &[u8],
-    hooks: Hooks<impl FnOnce(), impl FnOnce()>,
+    hooks: Hooks<impl FnOnce(), impl FnMut(usize)>,
 ) -> Result<(), WriteError> {
     let now = std::fs::read(file).map_err(io_err(path))?;
     if now != expected {
@@ -58,7 +60,7 @@ fn settle(
     out: &Path,
     expected: &[u8],
     bytes: &[u8],
-    swapped: impl FnOnce(),
+    swapped: impl FnMut(usize),
 ) -> Result<(), WriteError> {
     if std::fs::read(out).is_ok_and(|was| was == expected) {
         let _ = std::fs::remove_file(out);
@@ -72,41 +74,70 @@ fn settle(
 /// isn't, a newer write landed at the path in the moment between (another program's save, or
 /// another cold-lava's replace, which may already have said it was done), and the text just put
 /// back is older than it: so the newer one is swapped in once more, and the older one comes
-/// out. That repeats while each swap takes out a text newer than the one it put in (at most
-/// `ROUNDS` times), so the newest text ends at the path and no write's text is lost. What is
-/// left in `out` is removed only when it is this write's own `bytes` (or `expected`), or the
-/// text the path now holds; anything else is kept (`keep`). `swapped` runs before the swap
-/// back: tests land writes there.
+/// out. That repeats while each round takes out a text newer than the one it put in
+/// (`swap_back`). When a round settles (`Ours`, `Same`), the newest text is at the path, and
+/// what is left in `out` is removed only when it is this write's own `bytes`, `expected`, or
+/// the text the path now holds; anything else is kept (`keep`). When the rounds run out
+/// (`ROUNDS`) or a round stops (`Stopped`: a swap or a read failed), the path may hold an older
+/// text than the one in `out`: nothing is removed then, and what is in `out` is kept beside the
+/// path and named, whatever it holds. `between` runs before each round, with its number: tests
+/// land writes there.
 pub(super) fn put_back(
     path: &Path,
     file: &Path,
     out: &Path,
     expected: &[u8],
     bytes: &[u8],
-    swapped: impl FnOnce(),
+    mut between: impl FnMut(usize),
 ) -> Result<(), WriteError> {
-    const ROUNDS: usize = 16;
-    swapped();
     let mut there = bytes.to_vec();
-    let mut same: Option<Vec<u8>> = None;
-    for _ in 0..ROUNDS {
-        let Ok(held) = std::fs::read(out) else { break };
-        if os_rename::exchange(out, file).is_err() {
-            break;
-        }
-        match std::fs::read(out) {
-            Ok(came) if came == there => break,
-            Ok(came) if came == held => {
-                same = Some(came);
-                break;
-            }
-            Ok(_) => there = held,
-            Err(_) => break,
+    for round in 0..ROUNDS {
+        between(round);
+        match swap_back(out, file, &there) {
+            Round::Ours => return Err(keep(path, file, out, &[bytes, expected])),
+            Round::Same(same) => return Err(keep(path, file, out, &[bytes, expected, &same])),
+            Round::Newer(held) => there = held,
+            Round::Stopped => break,
         }
     }
-    let mut droppable = vec![bytes, expected];
-    droppable.extend(same.as_deref());
-    Err(keep(path, file, out, &droppable))
+    Err(keep(path, file, out, &[]))
+}
+
+/// How many rounds `put_back` swaps before it gives up. Each round past the first means another
+/// write landed at the path in the moment between two swaps; 16 in a row is no save that races
+/// a person's, but a writer that doesn't stop (a sync loop, a script), and the loop must end.
+/// Reaching it, the path holds the text the last round put in, and the newer one taken out is
+/// kept beside it and named, never removed. Each round is two reads and a swap.
+const ROUNDS: usize = 16;
+
+/// What one round of `put_back` found.
+enum Round {
+    /// What came out is what the last round put in: nothing newer had landed, and the text that
+    /// was in `out` is at the path.
+    Ours,
+    /// What came out holds the same as what went in: the path holds it, so `out` is a copy.
+    Same(Vec<u8>),
+    /// What came out is newer than what went in, which it holds: the next round puts it back.
+    Newer(Vec<u8>),
+    /// `out` couldn't be read, or swapped: what is at the path and in `out` is not known.
+    Stopped,
+}
+
+/// One round of `put_back`: read `out`, swap it with `file`, read what came out, and say which
+/// it was, given `there`, what the last round put in at the path.
+fn swap_back(out: &Path, file: &Path, there: &[u8]) -> Round {
+    let Ok(held) = std::fs::read(out) else {
+        return Round::Stopped;
+    };
+    if os_rename::exchange(out, file).is_err() {
+        return Round::Stopped;
+    }
+    match std::fs::read(out) {
+        Ok(came) if came == there => Round::Ours,
+        Ok(came) if came == held => Round::Same(came),
+        Ok(_) => Round::Newer(held),
+        Err(_) => Round::Stopped,
+    }
 }
 
 /// `checked` where the file system can't swap (NFS, most FUSE mounts): the file is moved aside

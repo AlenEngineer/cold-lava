@@ -190,7 +190,7 @@ pub(crate) fn replace_through_link(
 fn replace_at(path: &Path, file: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
     let hooks = replace::Hooks {
         compared: || {},
-        swapped: || {},
+        swapped: |_| {},
     };
     replace::checked(path, file, expected, bytes, hooks)
 }
@@ -373,7 +373,7 @@ mod tests {
             std::fs::write(&p, "v1").unwrap();
             let hooks = Hooks {
                 compared: || theirs(&p),
-                swapped: || {},
+                swapped: |_| {},
             };
             let refused = checked(&p, &p, b"v1", b"ours", hooks);
             assert!(
@@ -452,7 +452,11 @@ mod tests {
             std::fs::write(&p, "v1").unwrap();
             let hooks = Hooks {
                 compared: || theirs_by_a_rename(&p),
-                swapped: || third(&p),
+                swapped: |round| {
+                    if round == 0 {
+                        third(&p)
+                    }
+                },
             };
             let refused = checked(&p, &p, b"v1", b"ours", hooks);
             let (beside, name) = kept_beside(&refused, &p);
@@ -472,7 +476,7 @@ mod tests {
         let p = d.join("N.md");
         std::fs::write(&p, "third").unwrap();
         let out = staged(&p, &p, b"theirs").unwrap();
-        let kept = put_back(&p, &p, &out, b"v1", b"ours", || {});
+        let kept = put_back(&p, &p, &out, b"v1", b"ours", |_| {});
         let (beside, name) = kept_beside(&kept, &p);
         assert_eq!(std::fs::read(&p).unwrap(), b"third");
         assert_eq!(std::fs::read(beside).unwrap(), b"theirs");
@@ -481,6 +485,61 @@ mod tests {
             [name.as_str(), "N.md"],
             "the staged name is gone"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A writer that doesn't stop: before each round of `put_back` another text lands at the
+    /// path, so every round takes out a newer one, until the rounds run out. The last to land
+    /// is the caller's old text (`expected`): it is newer than what the path holds, so it is
+    /// never removed, but kept beside the path and named.
+    #[test]
+    fn when_the_rounds_run_out_the_newest_text_is_kept_and_named() {
+        let d = dir("put-back-rounds");
+        let p = d.join("N.md");
+        std::fs::write(&p, "ours").unwrap();
+        let out = staged(&p, &p, b"theirs").unwrap();
+        let mut last = 0;
+        let kept = put_back(&p, &p, &out, b"v1", b"ours", |round| {
+            last = round;
+            let text = if round == 15 {
+                "v1".to_string()
+            } else {
+                format!("w{round}")
+            };
+            std::fs::write(&p, text).unwrap();
+        });
+        assert_eq!(last, 15, "sixteen rounds ran");
+        let (beside, name) = kept_beside(&kept, &p);
+        assert_eq!(std::fs::read(&beside).unwrap(), b"v1", "the newest is kept");
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            b"w14",
+            "the path holds an older text"
+        );
+        assert_eq!(
+            files(&d),
+            [name.as_str(), "N.md"],
+            "the staged name is gone"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A swap back that fails after a round took out a newer text: here the caller's old text
+    /// (`expected`) landed, then the file was removed, so the next swap can't be made. What
+    /// was taken out is newer than anything else, so it is never removed: it is kept and named.
+    #[test]
+    fn when_a_swap_back_fails_the_newest_text_is_kept_and_named() {
+        let d = dir("put-back-stopped");
+        let p = d.join("N.md");
+        std::fs::write(&p, "ours").unwrap();
+        let out = staged(&p, &p, b"theirs").unwrap();
+        let kept = put_back(&p, &p, &out, b"v1", b"ours", |round| match round {
+            0 => std::fs::write(&p, "v1").unwrap(),
+            _ => std::fs::remove_file(&p).unwrap(),
+        });
+        let (beside, name) = kept_beside(&kept, &p);
+        assert_eq!(std::fs::read(&beside).unwrap(), b"v1", "the newest is kept");
+        assert_eq!(files(&d), [name.as_str()], "the staged name is gone");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -495,10 +554,12 @@ mod tests {
         std::fs::write(&p, "v1").unwrap();
         let hooks = Hooks {
             compared: || theirs_by_a_rename(&p),
-            swapped: || {
-                let seen = std::fs::read(&p).unwrap();
-                assert_eq!(seen, b"b");
-                replace(&p, &seen, b"c").unwrap();
+            swapped: |round| {
+                if round == 0 {
+                    let seen = std::fs::read(&p).unwrap();
+                    assert_eq!(seen, b"b");
+                    replace(&p, &seen, b"c").unwrap();
+                }
             },
         };
         let refused = checked(&p, &p, b"v1", b"b", hooks);
@@ -518,7 +579,7 @@ mod tests {
         std::fs::write(&p, "v1").unwrap();
         let hooks = Hooks {
             compared: || theirs_by_a_rename(&p),
-            swapped: || {},
+            swapped: |_| {},
         };
         let b = checked(&p, &p, b"v1", b"b", hooks);
         assert!(matches!(&b, Err(WriteError::Changed(_))), "{b:?}");

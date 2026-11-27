@@ -160,10 +160,12 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   what comes out too: a newer text that landed in between is swapped in again, so the newest
   stays at the path and the older is kept beside the file as
   `.Name.cold-lava-kept-SECONDS-N.ext` and named (`Kept`, the gateway's `kept`; where the
-  user sees kept texts is #427). Where the file system can't swap, the file is moved aside
+  user sees kept texts is #427). After 16 rounds (`ROUNDS`, a writer that doesn't stop) or a
+  swap that fails, the path may hold an older text: the newer one is then kept beside it and
+  named, never removed. Where the file system can't swap, the file is moved aside
   by one rename onto a name it reserved and compared there. A text the engine took out is
   removed only when it is the caller's old text, the write's own, or what the path then
-  holds. Every caller classifies a `WriteError` through `Reason::of` (`EditError::from` for
+  holds, and after a swap back only when its rounds settled. Every caller classifies a `WriteError` through `Reason::of` (`EditError::from` for
   an edit, `EditError::from(gateway::Error)` back), never by matching its variants. `create`
   and `move_file` rename with `no_replace`, refused when something is there by then. Left
   open: a program that opened the file before the swap and writes into it after the

@@ -243,8 +243,9 @@ impl From<write::WriteError> for EditError {
 
 /// A refusal the gateway gave read back as an edit's error (the CLI's `item set` on an owned
 /// file): `From<EditError> for Error` the other way, beside it. Every reason is named, so a
-/// new one is decided here. A read-back said in an edit's `ReadBack` words is that again; one
-/// in its own words is an `Anchor`, which shows them as they are.
+/// new one is decided here. A read-back comes back as an `Anchor`, which shows its words as
+/// they are: an edit's `ReadBack` and `Anchor` say the same on the wire, and are told apart by
+/// nothing past it.
 impl From<Error> for EditError {
     fn from(e: Error) -> EditError {
         let m = e.message;
@@ -252,10 +253,7 @@ impl From<Error> for EditError {
             Reason::Changed => EditError::Changed(m),
             Reason::Kept => EditError::Kept(m),
             Reason::Io => EditError::Io(m),
-            Reason::ReadBack => match m.strip_prefix(crate::edit::READ_BACK) {
-                Some(why) => EditError::ReadBack(why.to_string()),
-                None => EditError::Anchor(m),
-            },
+            Reason::ReadBack => EditError::Anchor(m),
             Reason::Refused | Reason::Forbidden | Reason::NoWorkspace | Reason::Exists => {
                 EditError::Refused(m)
             }
@@ -1735,7 +1733,6 @@ fields.text = { rest = true }
             EditError::Changed("c".into()),
             EditError::Kept("k".into()),
             EditError::Refused("r".into()),
-            EditError::ReadBack("due".into()),
             EditError::Anchor("^rent would go".into()),
             EditError::Io("io".into()),
         ];
@@ -1743,6 +1740,14 @@ fields.text = { rest = true }
             let back = EditError::from(Error::from(e.clone()));
             assert_eq!(back, e, "an edit's error comes back as it went");
         }
+        let back = EditError::from(read_back);
+        let words = "refused, the note would not read back: due";
+        assert_eq!(
+            back,
+            EditError::Anchor(words.into()),
+            "a read-back, in its words"
+        );
+        assert_eq!(Error::from(back).reason, Reason::ReadBack);
         let exists = EditError::from(Error::new(Reason::Exists, "there"));
         assert_eq!(exists, EditError::Refused("there".into()));
         wire(
