@@ -282,6 +282,43 @@ fn a_note_the_switcher_creates_out_of_the_workspace_is_refused() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A link another program wrote can lead out of the workspace (`[[../../Escaped]]`) or name a
+/// hidden note (`[[Nothing.csv/]]`, #331): following it, or tidy's create on it, refuses the
+/// note (#421).
+fn a_note_a_link_names_out_of_the_workspace_is_refused(script: &str) {
+    let dir = sandbox(script.trim_end_matches(".drive"));
+    let workspace = dir.join("example-workspace");
+    std::fs::write(
+        workspace.join("Inbox/Escape.md"),
+        "Links another program wrote: [[../../Escaped]] and [[Nothing.csv/]].\n",
+    )
+    .unwrap();
+    // `../../Escaped.md` from the workspace's root is beside the sandbox, not in it.
+    let beside = dir.parent().unwrap().join("Escaped.md");
+    let _ = std::fs::remove_file(&beside);
+    let out = drive(script, &dir);
+    assert_passed(&out);
+    assert!(
+        !beside.exists(),
+        "Escaped.md was written outside the workspace"
+    );
+    assert!(
+        !workspace.join("Nothing.csv").exists(),
+        "a hidden note was made"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn following_a_link_out_of_the_workspace_creates_no_note() {
+    a_note_a_link_names_out_of_the_workspace_is_refused("follow-link-escape.drive");
+}
+
+#[test]
+fn tidys_create_on_a_link_out_of_the_workspace_creates_no_note() {
+    a_note_a_link_names_out_of_the_workspace_is_refused("tidy-create-escape.drive");
+}
+
 /// A folder that is a symlink to a folder outside the workspace is not a way out for a new
 /// note's name (#411).
 #[cfg(unix)]

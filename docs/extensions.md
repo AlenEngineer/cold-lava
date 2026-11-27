@@ -2670,7 +2670,7 @@ round trip per link is never acceptable.
   `Rewriter::link` resolves a link before and after a move and writes it again in its own style
   when it leads elsewhere; Markdown's owner (`owner::markdown::relink`) finds the links and puts
   the new text in place. `resolver::new_note_path` and `new_file_path` say where
-  a new note or file goes.
+  a new note or file goes; `files::new_note` checks that a new note's stays in the workspace.
 - **Agreement is tested.** `resolver.rs`'s tests write a link to every file from every note in
   every style, over the example workspace and over a fixture with same-name notes, and check
   that `Files` and `Resolver` both lead it back to the same file. `graph.rs` checks each `./`

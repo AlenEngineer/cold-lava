@@ -514,6 +514,7 @@ mod tests {
             )],
             given: Default::default(),
             problems: Vec::new(),
+            failed: None,
         });
         let g = of(v, ALL);
         let mut l = labels(&g);

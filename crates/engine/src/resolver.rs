@@ -7,7 +7,8 @@
 //! leads back to it. The rules: `#heading` and `|alias` are split off first (`split_link`); a
 //! note by its workspace path, then by its name anywhere, the shallowest winning; other files
 //! by path, beside the linking note, then by name; `./` and `../` from the linking file. A link
-//! that leads nowhere creates its note where Obsidian would (`new_note_path`).
+//! that leads nowhere creates its note where Obsidian would (`new_note_path`, checked by
+//! `files::new_note`).
 
 use crate::index::Index;
 use crate::workspace::{Workspace, attachment_kind, decode_target, encode_target_like};
@@ -17,7 +18,8 @@ use walkdir::WalkDir;
 
 /// The index's resolver: where a link leads among the notes (`resolve`) or the files other
 /// owners read (`resolve_owned`, `Eruptions.csv`). Same rules and tables as `Files`, which also
-/// sees attachments, so both give one answer.
+/// sees attachments, so both give one answer. The default finds nothing.
+#[derive(Default)]
 pub struct Resolver {
     notes: Table,
     owned: Table,
@@ -45,6 +47,7 @@ impl Resolver {
 
 /// Files by workspace path and by name, the shallowest of a name winning (of several as deep,
 /// the first by path): the table Obsidian's rules look a link up in.
+#[derive(Default)]
 struct Table {
     by_path: HashMap<String, usize>,
     by_name: HashMap<String, usize>,
@@ -150,14 +153,20 @@ pub fn file(ix: &Index, target: &str, from: Option<usize>) -> Option<PathBuf> {
 }
 
 /// Where a new note for an unresolved link goes, following Obsidian's
-/// "Default location for new notes" setting (`.obsidian/app.json`).
-pub fn new_note_path(ix: &Index, name: &str, from: Option<usize>) -> PathBuf {
+/// "Default location for new notes" setting (`.obsidian/app.json`), unchecked: a frontend
+/// asks `files::new_note`, which refuses a path out of the workspace.
+pub(crate) fn new_note_path(ix: &Index, name: &str, from: Option<usize>) -> PathBuf {
     new_file_path(ix, name.trim().trim_end_matches(".md"), "md", from)
 }
 
 /// Where a new `name.extension` goes: in the folder `name` names, else where Obsidian puts
 /// new files, as for notes.
-pub fn new_file_path(ix: &Index, name: &str, extension: &str, from: Option<usize>) -> PathBuf {
+pub(crate) fn new_file_path(
+    ix: &Index,
+    name: &str,
+    extension: &str,
+    from: Option<usize>,
+) -> PathBuf {
     let workspace = &ix.workspace;
     // A link with a folder (`[[Ideas/New]]`) says where it goes.
     if name.contains('/') {
@@ -265,6 +274,11 @@ pub struct Files {
 impl Files {
     /// The workspace's notes, and its other files read from disk.
     pub fn of_workspace(ix: &Index) -> Files {
+        Files::new(Files::rels_of_workspace(ix))
+    }
+
+    /// The paths `of_workspace` holds, without the tables links are looked up in.
+    pub(crate) fn rels_of_workspace(ix: &Index) -> Vec<String> {
         let mut rels: Vec<String> = ix
             .workspace
             .notes
@@ -282,7 +296,7 @@ impl Files {
                 rels.push(rel.to_string_lossy().replace('\\', "/"));
             }
         }
-        Files::new(rels)
+        rels
     }
 
     pub(crate) fn new(rels: Vec<String>) -> Files {

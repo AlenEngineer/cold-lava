@@ -1626,15 +1626,16 @@ impl Home {
                 let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
                     return;
                 };
-                let path = crate::resolver::new_note_path(ix, &name, ix.by_path(from));
+                // Another program may have written the link: its name can lead anywhere.
+                let new = match files::new_note(ix, &name, ix.by_path(from)) {
+                    Ok(new) => new,
+                    Err(e) => return self.flash(e.to_string()),
+                };
+                let path = new.path().to_path_buf();
                 if let Err(e) = crate::write::create_if_missing(&path, b"") {
                     return self.flash(format!("couldn't create the note: {e}"));
                 }
-                let rel = path
-                    .strip_prefix(self.root.as_deref().unwrap_or(Path::new("")))
-                    .map(|r| r.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                self.flash(format!("created {rel}"));
+                self.flash(format!("created {}", new.rel()));
                 self.reload_tree();
                 self.leave(here, &path, None);
                 self.show_at(&path, None);
@@ -4548,11 +4549,17 @@ impl Home {
                 let Some(ix) = self.core.as_ref().map(|c| &c.index) else {
                     return;
                 };
-                let path = crate::resolver::new_note_path(ix, &target, ix.by_rel(&from));
-                let created = crate::write::create_if_missing(&path, b"");
+                let new = match files::new_note(ix, &target, ix.by_rel(&from)) {
+                    Ok(new) => new,
+                    Err(e) => {
+                        self.mode = Mode::Tidy(view);
+                        return self.flash(e.to_string());
+                    }
+                };
+                let created = crate::write::create_if_missing(new.path(), b"");
                 self.reload_tree();
                 self.show_tidy(view);
-                let rel = path.strip_prefix(&root).unwrap_or(&path).display();
+                let rel = new.rel();
                 match created {
                     Ok(_) => self.flash(format!("created {rel}")),
                     Err(e) => self.flash(format!("couldn't create {rel}: {e}")),
