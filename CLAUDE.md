@@ -117,6 +117,11 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `core.rs`: `Core` = one live workspace. Owns the `Index`, is the only file watcher, re-reads only
   changed notes and emits `Event`s (`poll()`, `subscribe()`). The menu owns it, and the graph
   runs in the menu's loop on it. Don't add another watcher or full rescan loop.
+  `core/watch.rs` is that watcher, a tool: `Watch` owns the notify watcher, what it hears and
+  the folder a linked `.obsidian` leads to, and gives back each path heard by its names in the
+  workspace (`Watch::heard`); `classify` says what a path is (a note, a board, another file,
+  a folder, the graph settings), for what was heard and for what cold-lava itself moved.
+  `Core` only calls it.
   `core/whole.rs` is `Core::apply`, the one call that makes a rename, a merge or a recipe once
   it is planned and shown: the owners of the files other owners read give their new texts
   (`relink`), then it is written, then what they read is kept (`relinked`); when an extension
@@ -286,7 +291,9 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   once when no extension has to answer. Don't give a built-in owner a shortcut around that
   flow, and don't branch on who owns a file outside `owner/mod.rs`.
   What stays direct: Markdown (the scan and a note's edits never ask anyone), the scan reading
-  canvases into `owned` (it has no core to ask through), and planning a canvas's rename
+  canvases into `owned` (it has no core to ask through; it reads them as the core does,
+  `owner::give_bytes`, and a rescan takes the scan's reading of a version as the owner's),
+  and planning a canvas's rename
   (`canvas::relink` plans its own changes, since a card holds a path, not a link).
   **Pieces** (#243, docs/extensions.md "Pieces, as built"): an extension's owner can say what
   its file holds in the alphabet's terms, `given::Piece` (`place`, `role`, `attributes`,

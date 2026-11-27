@@ -42,23 +42,16 @@ pub struct Folded {
 
 impl Index {
     pub fn build(workspace: Workspace) -> Index {
-        let mut ix = Index::unlinked(workspace);
-        ix.relink();
-        ix
-    }
-
-    /// `workspace` with no link resolved and no backlinks, for a caller that changes it before
-    /// linking it once (`relink`): a rescan reads the owned files first. Nothing may ask it
-    /// about links until then.
-    pub(crate) fn unlinked(workspace: Workspace) -> Index {
-        Index {
+        let mut ix = Index {
             resolver: Resolver::default(),
             workspace,
             backlinks: Vec::new(),
             owned_backlinks: Vec::new(),
             outgoing: Vec::new(),
             folded: OnceLock::new(),
-        }
+        };
+        ix.relink();
+        ix
     }
 
     /// Recompute link resolution and backlinks from the notes in memory (no disk access).

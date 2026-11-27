@@ -67,6 +67,16 @@ pub fn give(owner: &str, rel: &str, text: &str) -> Option<Result<Given, String>>
     (built_in(rel) == Some(owner)).then(|| canvas::read(text))
 }
 
+/// `file/read` of the bytes of the file at `rel`, answered by its built-in owner: `None` when
+/// `owner` isn't it. The scan reads a built-in owner's files this way, and so does the core, so
+/// a rescan can take the scan's reading of a version for its own.
+pub fn give_bytes(owner: &str, rel: &str, bytes: &[u8]) -> Option<Result<Given, String>> {
+    (built_in(rel) == Some(owner)).then(|| {
+        let text = std::str::from_utf8(bytes).map_err(|_| crate::read::NotText.about("it"))?;
+        canvas::read(text)
+    })
+}
+
 /// `file/edit`, answered by the built-in owner of the file at `rel`: `None` when `owner` isn't
 /// it, and the request goes out to the extension.
 pub fn edit(

@@ -198,9 +198,8 @@ impl Harness {
         let mut core = Core::open(&dir).unwrap();
         // The harness is the watcher from here on: the core hears of a file only when a test
         // says so (`saw`), through the code that reads the real watcher's events.
-        let (watcher, fs_events) = mpsc::channel();
-        core._watcher = None;
-        core.fs_events = Some(fs_events);
+        let (watcher, heard) = mpsc::channel();
+        core.watch.told_by(heard);
         let channel = core.subscribe();
         core.set_owners(vec![lines_kind()], None);
         let mut harness = Harness {

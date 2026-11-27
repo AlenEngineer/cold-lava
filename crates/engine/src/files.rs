@@ -557,14 +557,14 @@ impl Trash {
 /// `workspace/files`: the workspace's files that end in `.<extension>`, outside hidden folders.
 pub fn list(index: &Index, extension: &str) -> Listed {
     Listed {
-        files: of_kinds(index, &[extension]),
+        files: of_kinds(&index.workspace, &[extension]),
     }
 }
 
 /// The workspace's files of each kind (by its extension) as `list` gives them, each kind's
 /// after the one before it, from one walk of the workspace.
-pub(crate) fn of_kinds(index: &Index, extensions: &[&str]) -> Vec<String> {
-    let all = crate::resolver::Files::rels_of_workspace(index);
+pub(crate) fn of_kinds(workspace: &workspace::Workspace, extensions: &[&str]) -> Vec<String> {
+    let all = crate::resolver::Files::rels_of_workspace(workspace);
     let mut out = Vec::new();
     for x in extensions {
         let want = x.trim_start_matches('.').to_ascii_lowercase();
