@@ -152,7 +152,15 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   `create`, `create_dir`, `files::free_name` and `trash::free_path` ask it, and so does a
   merge's undo. `may_move` is the one test of whether a move may go ahead: nothing is at
   the new path, or it differs only in case and is the very entry that moves (#388);
-  `move_file` and a rename's checks ask it. Never call `std::fs::write` on workspace files.
+  `move_file` and a rename's checks ask it. No other program's write that lands while one of
+  these is under way is replaced (#395, #230): `replace` swaps its new file in
+  (`write/os_rename.rs`, `exchange`: renameat2 or renameatx_np) and compares what came out,
+  putting another write's text back and refusing (`Changed`), or keeping a text it can't put
+  back beside the file and naming it (`Kept`); where the file system can't swap, the file is
+  moved aside and compared there. `create` and `move_file` rename with `no_replace`, refused
+  when something is there by then. What is left open is a program that opened the file
+  before the swap and writes into it after the compare. Never call `std::fs::write` on
+  workspace files.
 - `trash.rs`: the only way to delete: `delete` moves a file to the trash the workspace's
   `trashOption` names (system trash, or `.trash`; never a permanent delete), refused if it
   changed since it was read; `restore` puts it back. Frontends and extensions don't call

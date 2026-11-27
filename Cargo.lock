@@ -242,6 +242,7 @@ dependencies = [
  "pulldown-cmark",
  "regex",
  "rowan",
+ "rustix",
  "serde",
  "serde_json",
  "toml",

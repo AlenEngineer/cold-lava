@@ -3,16 +3,25 @@
 //! Every write is atomic (a hidden temporary file in the same folder, then a rename), so Obsidian,
 //! Neovim or a sync tool never sees a half-written note. Writes that replace existing content
 //! can say what they expect to be there, and are refused if the file changed in the meantime, so
-//! an edit made elsewhere is never overwritten.
+//! an edit made elsewhere is never overwritten, nor one that lands while the write is under way:
+//! the new file goes in by a swap or a rename that never replaces (`os_rename`), and what came
+//! out is checked.
+
+mod os_rename;
 
 use std::fmt;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug)]
 pub enum WriteError {
     /// The file's content isn't what the caller read earlier: someone else changed it.
     Changed(PathBuf),
+    /// Another write landed at the path (the first) while this one was under way, and what
+    /// was taken out of the file couldn't be put back: it is kept in the second path, a
+    /// hidden file beside it. Read the file again: this write may or may not be in it.
+    Kept(PathBuf, PathBuf),
     /// Creating a file where something already is (`taken`).
     Exists(PathBuf),
     /// A symlink that leads to no file, to nothing or to a folder: a write never puts a file
@@ -28,6 +37,12 @@ impl fmt::Display for WriteError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             WriteError::Changed(p) => write!(f, "{} changed since it was read", p.display()),
+            WriteError::Kept(p, kept) => write!(
+                f,
+                "{} changed while it was being written: the text taken out of it is kept in {}",
+                p.display(),
+                kept.display()
+            ),
             WriteError::Exists(p) => write!(f, "{} already exists", p.display()),
             WriteError::NotAFile(p) => f.write_str(&not_a_file(p.display())),
             WriteError::Link(p) => write!(
@@ -61,9 +76,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
 /// the way followed, so the rename replaces that file, beside it, and the link stays a link. A
 /// link to nothing, or to something that isn't a file, is `NotAFile`. Where a link may lead is
 /// the caller's to bound: this follows it anywhere. Only `write_atomic` and
-/// `replace_through_link` land here; `replace` and `create` rename over the path itself, so a
-/// link swapped in at the path after its check is replaced, not followed. A folder on the way
-/// swapped for a link is still followed (#366).
+/// `replace_through_link` land here; `replace` and `create` put their file at the path itself,
+/// so a link swapped in there after the check is never followed: `replace` swaps it out,
+/// `create` is refused. A folder on the way swapped for a link is still followed (#366).
 fn landing(path: &Path) -> Result<PathBuf, WriteError> {
     let link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if !link {
@@ -82,37 +97,54 @@ fn landing(path: &Path) -> Result<PathBuf, WriteError> {
 /// Replace `file`, where a write to `path` lands, with `bytes`: a temporary file beside it,
 /// then a rename. Errors name `path`, as the caller does.
 fn write_at(path: &Path, file: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+    let new = staged(path, file, bytes)?;
+    std::fs::rename(&new, file).map_err(|e| unstaged(&new, io_err(path)(e)))
+}
+
+/// A new file beside `file` holding `bytes`, on disk and with `file`'s permissions: what a
+/// write renames into place. Errors name `path`.
+fn staged(path: &Path, file: &Path, bytes: &[u8]) -> Result<PathBuf, WriteError> {
     let dir = file
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(io_err(dir))?;
-    let name = file
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    // Hidden, so file watchers (ours and Obsidian's) ignore it.
-    let tmp = dir.join(format!(".{name}.cold-lava-{}.tmp", std::process::id()));
-    let write = || -> io::Result<()> {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        // Keep the original file's permissions.
-        if let Ok(meta) = std::fs::metadata(file) {
-            let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    let (new, mut f) = loop {
+        let new = beside(file);
+        match std::fs::File::create_new(&new) {
+            Ok(f) => break (new, f),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(io_err(path)(e)),
         }
-        std::fs::rename(&tmp, file)
     };
-    write().map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        WriteError::Io(path.to_path_buf(), e)
-    })
+    let written = f.write_all(bytes).and_then(|()| f.sync_all());
+    written.map_err(|e| unstaged(&new, io_err(path)(e)))?;
+    if let Ok(meta) = std::fs::metadata(file) {
+        let _ = std::fs::set_permissions(&new, meta.permissions());
+    }
+    Ok(new)
+}
+
+/// A name beside `file` that this process hasn't used: hidden, so file watchers (ours and
+/// Obsidian's) ignore it, and new each time, so a text kept there (`Kept`) is never written
+/// over by a later write.
+fn beside(file: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let name = file.file_name().unwrap_or_default().to_string_lossy();
+    file.with_file_name(format!(".{name}.cold-lava-{}-{n}.tmp", std::process::id()))
+}
+
+/// `e`, once the file `staged` made is removed: it holds only this write's bytes.
+fn unstaged(new: &Path, e: WriteError) -> WriteError {
+    let _ = std::fs::remove_file(new);
+    e
 }
 
 /// Replace the file at `path` only if it still contains `expected` (what the caller read
 /// before). Outside the engine, `read::Seen::replace` is the way. It never follows a symlink: a
-/// link at `path` is refused (`Link`), and one swapped in after that check is replaced by the
-/// rename, never written through. Every path the engine found by its scan, or the gateway let
+/// link at `path` is refused (`Link`), and one swapped in after that check is taken out by the
+/// swap, never written through. Every path the engine found by its scan, or the gateway let
 /// through, is a file (`workspace::first_link`), so this is the write for all of them.
 pub(crate) fn replace(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), WriteError> {
     refuse_link(path)?;
@@ -145,6 +177,13 @@ fn replace_at(path: &Path, file: &Path, expected: &[u8], bytes: &[u8]) -> Result
     replace_with(path, file, expected, bytes, || {})
 }
 
+/// Compare `file` with `expected`, then put `bytes` in so that another program's write landing
+/// after the compare is never replaced unseen (#395). The new text is staged, then swapped
+/// with the file in one step (`os_rename::exchange`), so the path always holds a file, and
+/// what came out is compared again: unless it is still `expected`, another write landed after
+/// the compare, and it goes back in (`put_back`). Where the file system can't swap, the file is
+/// moved aside instead (`aside`). Left open, as on any POSIX system: a program that opened the
+/// file before the swap and writes into it after what came out was compared.
 fn replace_with(
     path: &Path,
     file: &Path,
@@ -156,8 +195,77 @@ fn replace_with(
     if now != expected {
         return Err(WriteError::Changed(path.to_path_buf()));
     }
+    let new = staged(path, file, bytes)?;
     between();
-    write_at(path, file, bytes)
+    match os_rename::exchange(&new, file) {
+        Ok(()) => settle(path, file, &new, expected, bytes),
+        Err(e) if e.kind() == io::ErrorKind::Unsupported => aside(path, file, &new, expected),
+        Err(e) => Err(unstaged(&new, gone(path, e))),
+    }
+}
+
+/// After the swap, `out` holds what `file` held at that moment. The write is done when that is
+/// what the caller read; anything else is another write's, and goes back.
+fn settle(
+    path: &Path,
+    file: &Path,
+    out: &Path,
+    expected: &[u8],
+    bytes: &[u8],
+) -> Result<(), WriteError> {
+    if std::fs::read(out).is_ok_and(|was| was == expected) {
+        let _ = std::fs::remove_file(out);
+        return Ok(());
+    }
+    put_back(path, file, out, bytes)
+}
+
+/// Swap another write's text in `out` back into `file`, and refuse (`Changed`). What comes out
+/// is removed only when it is this write's own `bytes`; anything else (a third write, landed in
+/// the moment between) stays in `out` and is named (`Kept`).
+fn put_back(path: &Path, file: &Path, out: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+    let back = os_rename::exchange(out, file).is_ok();
+    if back && std::fs::read(out).is_ok_and(|now| now == bytes) {
+        let _ = std::fs::remove_file(out);
+        return Err(WriteError::Changed(path.to_path_buf()));
+    }
+    Err(WriteError::Kept(path.to_path_buf(), out.to_path_buf()))
+}
+
+/// `replace_with` where the file system can't swap (NFS, most FUSE mounts): the file is moved
+/// aside, so a write after that can't land in it unseen, and compared there; the new text goes
+/// in only where nothing is (`os_rename::no_replace`). The path holds no file for that moment.
+/// Only a text that is `expected` is removed: another write's goes back, or is kept (`Kept`)
+/// when something is at the path by then.
+fn aside(path: &Path, file: &Path, new: &Path, expected: &[u8]) -> Result<(), WriteError> {
+    let old = beside(file);
+    os_rename::no_replace(file, &old).map_err(|e| unstaged(new, gone(path, e)))?;
+    let refused = match std::fs::read(&old).is_ok_and(|was| was == expected) {
+        true => match os_rename::no_replace(new, file) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&old);
+                return Ok(());
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                WriteError::Changed(path.to_path_buf())
+            }
+            Err(e) => WriteError::Io(path.to_path_buf(), e),
+        },
+        false => WriteError::Changed(path.to_path_buf()),
+    };
+    let refused = unstaged(new, refused);
+    match os_rename::no_replace(&old, file) {
+        Ok(()) => Err(refused),
+        Err(_) => Err(WriteError::Kept(path.to_path_buf(), old)),
+    }
+}
+
+/// `Changed` when the file is no longer there, as a write that removed it changed it.
+fn gone(path: &Path, e: io::Error) -> WriteError {
+    match e.kind() {
+        io::ErrorKind::NotFound => WriteError::Changed(path.to_path_buf()),
+        _ => WriteError::Io(path.to_path_buf(), e),
+    }
 }
 
 /// Whether something is at `path`: a file, a folder or a symlink, a link to nothing included.
@@ -166,13 +274,23 @@ pub fn taken(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
-/// Create a new file; refused if something is already there (`taken`). The rename puts it at
-/// `path` itself, so a link made there after the check is replaced, never written through.
+/// Create a new file; refused if something is already there (`taken`), or is by the time the
+/// file goes in (`os_rename::no_replace`): a file or a link made there after the check is
+/// neither replaced nor written through.
 pub fn create(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
     if taken(path) {
         return Err(WriteError::Exists(path.to_path_buf()));
     }
-    write_at(path, path, bytes)
+    let new = staged(path, path, bytes)?;
+    os_rename::no_replace(&new, path).map_err(|e| unstaged(&new, refused_at(path, path, e)))
+}
+
+/// `Exists` naming `to` when a rename onto it found something there, else `Io` naming `named`.
+fn refused_at(named: &Path, to: &Path, e: io::Error) -> WriteError {
+    match e.kind() {
+        io::ErrorKind::AlreadyExists => WriteError::Exists(to.to_path_buf()),
+        _ => WriteError::Io(named.to_path_buf(), e),
+    }
 }
 
 /// Create a new file unless it already exists (then leave it alone). Returns whether it was made.
@@ -193,31 +311,54 @@ pub fn create_dir(path: &Path) -> Result<(), WriteError> {
     std::fs::create_dir_all(path).map_err(io_err(path))
 }
 
-/// Move a file, a folder or a symlink (the link itself); refused unless it `may_move`.
+/// Move a file, a folder or a symlink (the link itself); refused unless it `may_move`, or when
+/// something is at `to` by the time it moves (`os_rename::no_replace`, #230).
 pub fn move_file(from: &Path, to: &Path) -> Result<(), WriteError> {
     move_with(from, to, || {})
 }
 
 fn move_with(from: &Path, to: &Path, between: impl FnOnce()) -> Result<(), WriteError> {
-    if !may_move(from, to) {
+    let at = at(from, to);
+    if at == At::Other {
         return Err(WriteError::Exists(to.to_path_buf()));
     }
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).map_err(io_err(dir))?;
     }
     between();
-    std::fs::rename(from, to).map_err(io_err(from))
+    // Onto itself only the plain rename goes: to the system, the new spelling is taken.
+    let moved = match at {
+        At::Itself => std::fs::rename(from, to),
+        _ => os_rename::no_replace(from, to),
+    };
+    moved.map_err(|e| refused_at(from, to, e))
 }
 
 /// Whether `from` may move to `to`: nothing is there (`taken`), or `to` differs from `from`
 /// only in case and names the very entry `from` does, as on a file system that ignores case.
 /// Where case tells names apart, that spelling can be another file, which a move would replace.
 pub(crate) fn may_move(from: &Path, to: &Path) -> bool {
+    at(from, to) != At::Other
+}
+
+/// What a move from `from` finds at `to`.
+#[derive(PartialEq)]
+enum At {
+    Nothing,
+    /// `from` itself, under a spelling that differs only in case.
+    Itself,
+    Other,
+}
+
+fn at(from: &Path, to: &Path) -> At {
     let Ok(there) = std::fs::symlink_metadata(to) else {
-        return true;
+        return At::Nothing;
     };
     let case_only = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
-    case_only && std::fs::symlink_metadata(from).is_ok_and(|here| same_entry(&here, &there))
+    match case_only && std::fs::symlink_metadata(from).is_ok_and(|here| same_entry(&here, &there)) {
+        true => At::Itself,
+        false => At::Other,
+    }
 }
 
 #[cfg(unix)]
@@ -307,6 +448,82 @@ mod tests {
             );
             assert_eq!(std::fs::read(&p).unwrap(), b"theirs", "{how}");
             assert_eq!(files(&d), ["N.md"], "{how}: nothing left beside it");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The same on a file system that can't swap two files: the file is moved aside, compared
+    /// there and put back (`aside`). With no other write, the new text goes in.
+    #[test]
+    fn a_save_that_lands_where_files_cant_be_swapped_is_kept() {
+        let d = dir("race-aside");
+        let p = d.join("N.md");
+        for (how, theirs) in THEIRS {
+            std::fs::write(&p, "v1").unwrap();
+            let new = staged(&p, &p, b"ours").unwrap();
+            theirs(&p);
+            let refused = aside(&p, &p, &new, b"v1");
+            assert!(
+                matches!(&refused, Err(WriteError::Changed(at)) if *at == p),
+                "{how}: {refused:?}"
+            );
+            assert_eq!(std::fs::read(&p).unwrap(), b"theirs", "{how}");
+            assert_eq!(files(&d), ["N.md"], "{how}: nothing left beside it");
+        }
+        let new = staged(&p, &p, b"ours").unwrap();
+        aside(&p, &p, &new, b"theirs").unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"ours");
+        assert_eq!(files(&d), ["N.md"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A third write lands on the new text in the moment before the other write's text goes
+    /// back: the other text is put back, and the third, which is neither, stays beside the file
+    /// and is named.
+    #[test]
+    fn a_text_that_cant_be_put_back_is_kept_and_named() {
+        let d = dir("put-back");
+        let p = d.join("N.md");
+        std::fs::write(&p, "third").unwrap();
+        let out = staged(&p, &p, b"theirs").unwrap();
+        let kept = put_back(&p, &p, &out, b"ours");
+        assert!(
+            matches!(&kept, Err(WriteError::Kept(at, beside)) if *at == p && *beside == out),
+            "{kept:?}"
+        );
+        assert_eq!(std::fs::read(&p).unwrap(), b"theirs");
+        assert_eq!(std::fs::read(&out).unwrap(), b"third");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The rename that never replaces, with the system's flag and by a hard link: refused onto
+    /// a file or a folder that is there, both left as they were; done where nothing is.
+    #[test]
+    fn a_rename_never_replaces_what_is_there() {
+        let d = dir("no-replace");
+        let (a, b) = (d.join("A.md"), d.join("B.md"));
+        let (empty, full) = (d.join("Empty"), d.join("Full"));
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(full.join("Inside")).unwrap();
+        type Rename = fn(&Path, &Path) -> io::Result<()>;
+        let renames: [(&str, Rename); 2] = [
+            ("no_replace", os_rename::no_replace),
+            ("by_link", os_rename::by_link),
+        ];
+        for (how, rename) in renames {
+            std::fs::write(&a, "a").unwrap();
+            std::fs::write(&b, "b").unwrap();
+            let refused = rename(&a, &b).unwrap_err();
+            assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{how}");
+            let folder = rename(&empty, &full).unwrap_err();
+            assert_eq!(folder.kind(), io::ErrorKind::AlreadyExists, "{how}");
+            assert!(full.join("Inside").is_dir(), "{how}");
+            assert_eq!(std::fs::read(&a).unwrap(), b"a", "{how}");
+            assert_eq!(std::fs::read(&b).unwrap(), b"b", "{how}");
+            std::fs::remove_file(&b).unwrap();
+            rename(&a, &b).unwrap();
+            assert_eq!(files(&d), ["B.md", "Empty", "Full"], "{how}");
+            assert_eq!(std::fs::read(&b).unwrap(), b"a", "{how}");
         }
         let _ = std::fs::remove_dir_all(&d);
     }

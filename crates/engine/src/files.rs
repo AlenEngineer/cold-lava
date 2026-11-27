@@ -245,10 +245,20 @@ fn io(rel: &str) -> impl Fn(std::io::Error) -> Error + '_ {
     move |e| Error::new(Reason::Io, format!("{rel}: {e}"))
 }
 
+/// `Kept`, naming the hidden file beside `rel` that holds the text taken out of it.
+fn kept_beside(rel: &str, kept: &Path) -> String {
+    let name = kept.file_name().unwrap_or_default().to_string_lossy();
+    format!(
+        "{rel} changed while it was being written: the text taken out of it is kept beside it in \
+         {name}"
+    )
+}
+
 fn written(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
     move |e| {
         let message = match &e {
             WriteError::Changed(_) => format!("{rel} changed while writing: read it again"),
+            WriteError::Kept(_, kept) => kept_beside(rel, kept),
             WriteError::Exists(_) => format!("{rel} already exists"),
             WriteError::NotAFile(_) => write::not_a_file(rel),
             WriteError::Link(_) => never_followed(rel),
@@ -349,6 +359,7 @@ fn moved(rel: &str) -> impl Fn(WriteError) -> Error + '_ {
     move |e| {
         let message = match &e {
             WriteError::Changed(_) => format!("{rel} changed since it was read: read it again"),
+            WriteError::Kept(_, kept) => kept_beside(rel, kept),
             WriteError::Exists(_) => format!("{rel} already exists"),
             WriteError::NotAFile(_) => write::not_a_file(rel),
             WriteError::Link(_) => never_followed(rel),

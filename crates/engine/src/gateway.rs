@@ -200,7 +200,7 @@ impl Reason {
     /// The reason a write refused or failed with, as its kind says.
     pub fn of(e: &write::WriteError) -> Reason {
         match e {
-            write::WriteError::Changed(_) => Reason::Changed,
+            write::WriteError::Changed(_) | write::WriteError::Kept(..) => Reason::Changed,
             write::WriteError::Exists(_) => Reason::Exists,
             write::WriteError::NotAFile(_) | write::WriteError::Link(_) => Reason::Refused,
             write::WriteError::Io(..) => Reason::Io,
@@ -1716,6 +1716,8 @@ fields.text = { rest = true }
             Reason::of(&write::WriteError::Changed(at())),
             Reason::Changed
         );
+        let kept = write::WriteError::Kept(at(), PathBuf::from(".Lava.md.kept"));
+        assert_eq!(Reason::of(&kept), Reason::Changed);
         assert_eq!(Reason::of(&write::WriteError::Exists(at())), Reason::Exists);
         let link = write::WriteError::NotAFile(at());
         assert_eq!(Reason::of(&link), Reason::Refused);
