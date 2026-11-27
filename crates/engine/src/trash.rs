@@ -6,6 +6,7 @@
 //! the file (none on this platform, or it is on another disk), it goes to `.trash` too.
 
 use crate::read::Seen;
+use crate::workspace::first_link;
 use crate::write::{WriteError, move_file, taken};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -86,13 +87,27 @@ pub struct Trashed {
 pub fn delete(root: &Path, seen: &Seen, system: Option<&Bin>) -> Result<Trashed, WriteError> {
     seen.unchanged_entry()?;
     let path = seen.path();
-    let local = Bin::Folder(root.join(".trash"));
     if let (TrashOption::System, Some(bin)) = (TrashOption::of_workspace(root), system)
         && let Ok(t) = put(path, bin, Went::System)
     {
         return Ok(t);
     }
-    put(path, &local, Went::WorkspaceTrash)
+    put(
+        path,
+        &Bin::Folder(workspace_trash(root)?),
+        Went::WorkspaceTrash,
+    )
+}
+
+/// The workspace's `.trash`, refused (`Link`) when it is a symlink: following it would send
+/// deleted files out of the workspace (`workspace::first_link`, the one rule).
+fn workspace_trash(root: &Path) -> Result<PathBuf, WriteError> {
+    let dir = root.join(".trash");
+    match first_link(root, ".trash") {
+        Ok(None) => Ok(dir),
+        Ok(Some(_)) => Err(WriteError::Link(dir)),
+        Err(e) => Err(WriteError::Io(dir, e)),
+    }
 }
 
 fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
@@ -157,8 +172,13 @@ fn put(path: &Path, bin: &Bin, went: Went) -> Result<Trashed, WriteError> {
 }
 
 /// Put a trashed file back at `to` (its old path, or another the user chose); refused if
-/// something is there now.
+/// something is there now, or if the workspace's `.trash` it is in has become a symlink.
 pub fn restore(t: &Trashed, to: &Path) -> Result<(), WriteError> {
+    if t.went == Went::WorkspaceTrash
+        && let Some(root) = t.at.parent().and_then(Path::parent)
+    {
+        workspace_trash(root)?;
+    }
     move_file(&t.at, to)?;
     if let Some(info) = &t.info {
         let _ = std::fs::remove_file(info);
