@@ -172,13 +172,18 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   removed only when it is the caller's old text, the write's own, or what the path then
   holds, and after a swap back only when its rounds settled. cold-lava's own replaces take
   turns (`write/lock.rs`): each holds `flock` on its file's folder (the link's target's, for
-  `replace_through_link`) from the compare to the last swap, so only other programs race the
-  swap; the lock leaves no file, and a write that waits 5 s goes ahead without it. A swap back
+  `replace_through_link`) from the compare to the last swap (the new text is staged before),
+  so no two replaces race the swap; other programs, and cold-lava's own moves and deletes
+  (`move_file`, `trash::delete`, which take no turn), still can. The lock leaves no file, a
+  write that waits 5 s goes ahead without it (each later save in that folder waits the 5 s
+  again while the holder is stopped), and on NFS it is never held. A swap back
   can't tell a later text from an earlier one another swapper put back, so with a writer that
   went ahead unlocked a done save may end up kept beside the path (never removed). The words
-  a person sees name the kept file first, by its workspace path (`kept_words`,
-  `WriteError::named_from`, `kept_beside`). Every caller classifies a `WriteError` through `Reason::of` (`EditError::from` for
-  an edit, `EditError::from(gateway::Error)` back), never by matching its variants. `create`
+  a person sees name the kept file first, by its workspace path (`kept_words`, from the root:
+  `WriteError::named_from`, or `named_in` for an error passed on; `kept_beside` only where no
+  root is known, the edit desk). Every caller classifies a `WriteError` through `Reason::of`
+  (`EditError::written(e, root)` for an edit, with no `From<WriteError>` so the root can't be
+  left out; `EditError::from(gateway::Error)` back), never by matching its variants. `create`
   and `move_file` rename with `no_replace`, refused when something is there by then. Left
   open: a program that opened the file before the swap and writes into it after the
   compare; and, on a file system with neither rename flags nor hard links, `no_replace`'s

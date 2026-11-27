@@ -643,14 +643,18 @@ pub(crate) fn check_unchanged<'a>(
 pub struct Written(Vec<(Seen, String)>);
 
 impl Written {
-    /// Write each of `edits` over its old text; if one fails, put back the ones written.
-    pub(crate) fn all<'a>(edits: impl IntoIterator<Item = &'a FileEdit>) -> Result<Written> {
+    /// Write each of `edits` over its old text; if one fails, put back the ones written. A
+    /// kept text is named from `root`, the workspace's (`WriteError::named_in`).
+    pub(crate) fn all<'a>(
+        root: &Path,
+        edits: impl IntoIterator<Item = &'a FileEdit>,
+    ) -> Result<Written> {
         let mut written = Written::default();
         for e in edits {
             let (old, new) = (e.old_text.as_bytes(), e.new_text.as_bytes());
             if let Err(err) = Seen::kept(&e.path, old).replace(new) {
                 let undone = written.put_back();
-                return Err(err).with_context(|| match undone {
+                return Err(err.named_in(root)).with_context(|| match undone {
                     Ok(()) => format!("writing {}; nothing was changed", e.file),
                     Err(_) => format!("writing {}; some files couldn't be put back", e.file),
                 });
@@ -727,7 +731,7 @@ pub(crate) fn apply(plan: &Plan, root: &Path) -> Result<()> {
         let path = moved(&e.path);
         let seen = Seen::kept(&path, e.old_text.as_bytes());
         if let Err(err) = seen.replace(e.new_text.as_bytes()) {
-            failed.push(format!("{} ({err})", e.file));
+            failed.push(format!("{} ({})", e.file, err.named_from(root)));
         }
     }
     if !failed.is_empty() {

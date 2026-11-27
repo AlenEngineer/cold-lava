@@ -335,7 +335,7 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
         ),
     }
     rename::check_unchanged(m.writes(), "merge")?;
-    let written = Written::all(m.writes())?;
+    let written = Written::all(&m.root, m.writes())?;
     match trash::delete(&m.root, &source, system) {
         Ok(trashed) => Ok(Merged {
             root: m.root.clone(),

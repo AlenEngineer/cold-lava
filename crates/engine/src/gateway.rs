@@ -202,7 +202,7 @@ pub enum Reason {
 
 impl Reason {
     /// The reason a write refused or failed with, as its kind says: the one reading of a
-    /// `WriteError` every caller asks (`EditError::from` too), never its variants matched.
+    /// `WriteError` every caller asks (`EditError::written` too), never its variants matched.
     pub fn of(e: &write::WriteError) -> Reason {
         match e {
             write::WriteError::Changed(_) => Reason::Changed,
@@ -229,16 +229,10 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// An edit's write refused or failed, read as `Reason::of` reads it, in the write's words.
-impl From<write::WriteError> for EditError {
-    fn from(e: write::WriteError) -> EditError {
-        EditError::written(e, Path::new(""))
-    }
-}
-
 impl EditError {
-    /// An edit's write refused or failed, as `From<WriteError>` reads it, with a kept text
-    /// named from the workspace's `root` (`WriteError::named_from`).
+    /// An edit's write refused or failed, read as `Reason::of` reads it, in the write's words,
+    /// with a kept text named from the workspace's `root` (`WriteError::named_from`). There is
+    /// no `From<WriteError>`, so no caller can leave the root out.
     pub fn written(e: write::WriteError, root: &Path) -> EditError {
         let words = e.named_from(root);
         match Reason::of(&e) {
@@ -1788,11 +1782,15 @@ fields.text = { rest = true }
         );
         let kept = write::WriteError::Kept(at(), PathBuf::from(".Lava.md.kept"));
         assert_eq!(Reason::of(&kept), Reason::Kept);
-        let edit = EditError::from(write::WriteError::Kept(
-            at(),
-            PathBuf::from(".Lava.md.kept"),
-        ));
-        assert!(matches!(&edit, EditError::Kept(words) if words.contains(".Lava.md.kept")));
+        let edit = EditError::written(
+            write::WriteError::Kept(
+                PathBuf::from("/w/Lava.md"),
+                PathBuf::from("/w/.Lava.md.kept"),
+            ),
+            Path::new("/w"),
+        );
+        let words = "other text kept in .Lava.md.kept · Lava.md changed while saving";
+        assert_eq!(edit, EditError::Kept(words.into()), "named from the root");
         assert_eq!(Error::from(edit).reason, Reason::Kept);
         assert_eq!(Reason::of(&write::WriteError::Exists(at())), Reason::Exists);
         let link = write::WriteError::NotAFile(at());

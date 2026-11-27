@@ -1,10 +1,11 @@
-//! cold-lava's own writers take turns: every `replace` holds an advisory lock on the folder
+//! cold-lava's own replaces take turns: every `replace` holds an advisory lock on the folder
 //! its file is in, from its compare to its last swap (`replace::checked`), so two cold-lavas
 //! (two processes, or two threads of one) never swap one file in each other's moment. Without
 //! it, a third writer's swap back could take out a save another had already reported done and
 //! put a refused one in its place (#425). Programs that don't take the lock (Obsidian, an
 //! editor, a sync tool) still go through `replace`'s exchange and check, which is what keeps
-//! their writes.
+//! their writes. cold-lava's own moves and deletes (`move_file`, `trash::delete`) take no turn
+//! either: one during a turn makes the swap fail, or the moved file holds the new text.
 //!
 //! Why the folder and how: `flock` on the folder's own descriptor (opened read-only) leaves no
 //! file anywhere, so nothing new shows in the workspace, in Obsidian or in the scan, and no
@@ -13,22 +14,28 @@
 //! swap puts another file at its path, which a second writer would open and lock unhindered. The
 //! folder is the one the swap happens in, a symlink's target's when a write follows a link
 //! (`replace_through_link`), so a write through a link and one to the file it leads to wait for
-//! each other. Writes of other files in the same folder wait too: each holds the lock for a few
-//! milliseconds (a staged write and two swaps).
+//! each other. Writes of other files in the same folder wait too: each holds the lock for two
+//! reads and the swaps, since its new text is staged (written and synced) before it takes it.
 //!
 //! It never deadlocks: a write waits at most `WAIT`, then goes ahead without the lock, as
 //! every write did before it, and so does a write where the lock can't be taken (a folder that
 //! can't be opened, a file system without `flock`, a system without it). A write that goes
 //! ahead so is checked as an outside program's is: what that leaves open is `put_back`'s to
-//! say. A leaf: std and rustix.
+//! say. On NFS, `flock` on a folder's descriptor fails (`EBADF`: Linux emulates it as a POSIX
+//! lock, which needs a descriptor open for writing), so every write there goes ahead unlocked,
+//! as before. A leaf: std and rustix.
 
 use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
-/// How long a write waits for another cold-lava's turn on the same folder to end. A turn is a
-/// few milliseconds; one that lasts this long is a writer stopped (a debugger, `SIGSTOP`, a
-/// file system that hangs), and waiting longer would hang this one with it.
+/// How long a write waits for another cold-lava's turn on the same folder to end. A turn is two
+/// reads and the swaps; one that lasts this long is a writer stopped (a debugger, `SIGSTOP`, a
+/// file system that hangs), and waiting longer would hang this one with it. Nothing remembers
+/// that a wait ran out: while the holder stays stopped, every later save in that folder waits
+/// the whole `WAIT` again, on the caller's thread (the TUI's one thread for the menu's saves).
+/// The trade is stated: a stopped holder is rare, and remembering it would need state shared
+/// across writes that could go stale.
 const WAIT: Duration = Duration::from_secs(5);
 
 /// A writer's turn on a folder: the lock, held until this is dropped. Empty when the write went

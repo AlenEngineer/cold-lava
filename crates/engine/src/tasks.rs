@@ -371,7 +371,7 @@ pub fn toggle_in(
     )?;
     crate::read::Seen::kept(&path, text.as_bytes())
         .replace(t.text.as_bytes())
-        .map_err(crate::edit::EditError::from)?;
+        .map_err(|e| crate::edit::EditError::written(e, &root))?;
     Ok(t)
 }
 

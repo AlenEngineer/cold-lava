@@ -9,8 +9,11 @@
 //! (`put_back`). Where that can't go on (a writer that doesn't stop, a swap that fails), the
 //! path may hold an older text: the newer one is never removed then, but kept beside it, named.
 //!
-//! cold-lava's own writers never race here: each holds its turn on the file's folder through
-//! all of it (`lock`), so the other writers `checked` meets are other programs.
+//! cold-lava's own replaces never race here: each holds its turn on the file's folder from its
+//! compare to its last swap (`lock`), so the other writers `checked` meets are other programs,
+//! a cold-lava whose wait ran out, and cold-lava's own moves and deletes (`move_file`,
+//! `trash::delete`), which take no turn. A move or delete during a turn makes the swap fail, or
+//! the moved file holds the new text: no text is lost.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -35,7 +38,9 @@ pub(super) struct Hooks<A, B> {
 /// it is removed or put back as a link and never written through. Left open, as on any POSIX
 /// system: a program that opened the file before the swap and writes into it after what came
 /// out was compared. Another cold-lava's replace of a file in the same folder waits until
-/// this one is done, from the compare to the last swap (`lock::take`). Errors name `path`.
+/// this one is done, from the compare to the last swap (`lock::take`); the new text is staged
+/// (written and synced) before the turn is taken, so the turn holds no write to disk. Errors
+/// name `path`.
 pub(super) fn checked(
     path: &Path,
     file: &Path,
@@ -43,12 +48,15 @@ pub(super) fn checked(
     bytes: &[u8],
     hooks: Hooks<impl FnOnce(), impl FnMut(usize)>,
 ) -> Result<(), WriteError> {
-    let _turn = lock::take(file);
-    let now = std::fs::read(file).map_err(io_err(path))?;
-    if now != expected {
-        return Err(WriteError::Changed(path.to_path_buf()));
-    }
+    // A file that isn't there is refused before anything is staged, as it was when the
+    // compare came first, so staging never makes its folder.
+    std::fs::metadata(file).map_err(io_err(path))?;
     let new = staged(path, file, bytes)?;
+    let _turn = lock::take(file);
+    let now = std::fs::read(file).map_err(|e| unstaged(&new, io_err(path)(e)))?;
+    if now != expected {
+        return Err(unstaged(&new, WriteError::Changed(path.to_path_buf())));
+    }
     (hooks.compared)();
     match os_rename::exchange(&new, file) {
         Ok(()) => settle(path, file, &new, expected, bytes, hooks.swapped),

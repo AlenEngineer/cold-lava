@@ -70,6 +70,8 @@ pub(crate) fn kept_words(name: impl fmt::Display, kept: impl fmt::Display) -> St
 
 /// `Kept`'s words naming the file by `rel`, its workspace path, and the kept text by the
 /// workspace path of the hidden file beside it, as a write that follows no link keeps it.
+/// Only for a caller that knows the workspace path but not the root (the edit desk,
+/// `Edits::wrote`); one that has the root names the error with [`WriteError::named_from`].
 pub(crate) fn kept_beside(rel: &str, kept: &Path) -> String {
     let name = kept.file_name().unwrap_or_default().to_string_lossy();
     let at = match rel.rsplit_once('/') {
@@ -90,6 +92,19 @@ impl WriteError {
                 crate::rel_path::or_whole(root, kept),
             ),
             _ => self.to_string(),
+        }
+    }
+
+    /// The same error, with a kept text's two paths named from `root` as
+    /// [`WriteError::named_from`] names them, for a caller that passes the error on (the core
+    /// reads its reason back, `Reason::of`) and whose words a person is shown.
+    pub fn named_in(self, root: &Path) -> WriteError {
+        match self {
+            WriteError::Kept(p, kept) => WriteError::Kept(
+                crate::rel_path::or_whole(root, &p).into(),
+                crate::rel_path::or_whole(root, &kept).into(),
+            ),
+            e => e,
         }
     }
 }

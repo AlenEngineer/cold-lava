@@ -267,7 +267,7 @@ fn as_refused<'a>(
     move |e| {
         let message = match &e {
             WriteError::Changed(_) => format!("{rel} changed {changed}: read it again"),
-            WriteError::Kept(_, kept) => write::kept_beside(rel, kept),
+            WriteError::Kept(..) => e.named_from(root),
             WriteError::Exists(_) => format!("{rel} already exists"),
             WriteError::NotAFile(_) => write::not_a_file(rel),
             WriteError::Link(link) => link_refused(root, rel, link),
