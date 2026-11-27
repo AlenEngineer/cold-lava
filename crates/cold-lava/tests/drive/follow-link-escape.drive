@@ -1,0 +1,21 @@
+# Following a link that leads nowhere creates its note, but not one named out of the workspace
+# (`..` in it) or a hidden one (a trailing slash, #331), whoever wrote the link (#421).
+# tests/drive.rs writes Inbox/Escape.md and checks nothing was written outside the workspace.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys p
+wait-for Go to note
+type Inbox/Escape
+wait-for Escape
+keys enter
+wait-for Links another program wrote
+keys tab enter
+wait-for ../../Escaped.md: a path can't have
+expect Inbox/Escape  reading
+keys tab enter
+wait-for Nothing.csv/.md: a path can't have
+expect Inbox/Escape  reading
+keys esc
+wait-gone reading · Esc / q back
+keys q
+exits 0
