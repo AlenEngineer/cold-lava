@@ -263,6 +263,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Where case tells names apart, `lava.md` beside `Lava.md` is another entry: a case-only
+    /// move onto it is refused, and with nothing there it goes ahead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_case_only_move_never_replaces_another_entry() {
+        let d = dir("case");
+        let (upper, lower) = (d.join("Lava.md"), d.join("lava.md"));
+        std::fs::write(&upper, "upper").unwrap();
+        std::fs::write(&lower, "lower").unwrap();
+        let refused = move_file(&upper, &lower);
+        assert!(
+            matches!(&refused, Err(WriteError::Exists(p)) if *p == lower),
+            "{refused:?}"
+        );
+        assert_eq!(std::fs::read(&upper).unwrap(), b"upper");
+        assert_eq!(std::fs::read(&lower).unwrap(), b"lower");
+
+        std::fs::remove_file(&lower).unwrap();
+        std::os::unix::fs::symlink("nowhere.md", &lower).unwrap();
+        assert!(
+            matches!(move_file(&upper, &lower), Err(WriteError::Exists(_))),
+            "a link to nothing at the new spelling is another entry too"
+        );
+        assert!(is_link(&lower));
+
+        std::fs::remove_file(&lower).unwrap();
+        move_file(&upper, &lower).unwrap();
+        assert_eq!(files(&d), ["lava.md"]);
+        assert_eq!(std::fs::read(&lower).unwrap(), b"upper");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[cfg(unix)]
     fn is_link(path: &Path) -> bool {
         std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
