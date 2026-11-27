@@ -1287,6 +1287,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A rename onto a symlink to nothing is refused as onto any other entry, whether the link
+    /// was there when the rename was planned or came after: nothing moves, no link is rewritten,
+    /// and the link stays (#356).
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_onto_a_symlink_to_nothing_is_refused_and_the_link_stays() {
+        let (dir, ix) = workspace_with(
+            "onto-dangling",
+            &[("Rock/Lava.md", "x"), ("Ash.md", "[[Lava]]\n")],
+        );
+        let lava = ix.by_rel("Rock/Lava").unwrap();
+        std::os::unix::fs::symlink("Gone.md", dir.join("Rock/Basalt.md")).unwrap();
+        let planned = plan(&ix, lava, "Rock/Basalt.md").unwrap_err();
+        assert_eq!(planned.to_string(), "Rock/Basalt.md already exists");
+        let p = plan(&ix, lava, "Rock/Pumice.md").unwrap();
+        std::os::unix::fs::symlink("Gone.md", dir.join("Rock/Pumice.md")).unwrap();
+        let applied = apply(&p).unwrap_err();
+        assert_eq!(format!("{applied:#}"), "Rock/Pumice.md already exists");
+        assert_eq!(read(&dir, "Rock/Lava.md"), "x", "nothing moved");
+        assert_eq!(read(&dir, "Ash.md"), "[[Lava]]\n", "no link rewritten");
+        for at in ["Rock/Basalt.md", "Rock/Pumice.md"] {
+            let led = std::fs::read_link(dir.join(at)).unwrap();
+            assert_eq!(led, Path::new("Gone.md"), "{at} is still a link");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A `bookmarks.json` kept as a symlink is never touched by a rename: the rename goes
     /// ahead, the link stays and what it leads to keeps the old path.
     #[cfg(unix)]

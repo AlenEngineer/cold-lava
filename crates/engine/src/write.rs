@@ -365,17 +365,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// A move onto a link, or a folder made at one, finds the path `taken` as a new file does,
+    /// a link to nothing included (#356).
     #[cfg(unix)]
     #[test]
     fn nothing_is_written_over_a_symlink_to_nothing_or_to_a_folder() {
         let d = dir("not-through");
         std::fs::create_dir(d.join("Folder")).unwrap();
+        let note = d.join("Note.md");
+        std::fs::write(&note, "kept").unwrap();
         std::os::unix::fs::symlink("Gone.md", d.join("Dangling.md")).unwrap();
         std::os::unix::fs::symlink("Folder", d.join("Folder.md")).unwrap();
         for name in ["Dangling.md", "Folder.md"] {
             let at = d.join(name);
             let refused =
                 |e: Result<(), WriteError>| matches!(e, Err(WriteError::NotAFile(p)) if p == at);
+            let there =
+                |e: Result<(), WriteError>| matches!(e, Err(WriteError::Exists(p)) if p == at);
             assert!(refused(write_atomic(&at, b"x")), "write {name}");
             assert!(
                 refused(replace_through_link(&at, b"", b"x")),
@@ -386,11 +392,10 @@ mod tests {
                 "replace {name}"
             );
             assert!(taken(&at), "{name} is taken");
-            assert!(
-                matches!(create(&at, b"x"), Err(WriteError::Exists(_))),
-                "create {name}"
-            );
+            assert!(there(create(&at, b"x")), "create {name}");
             assert!(!create_if_missing(&at, b"x").unwrap(), "{name}");
+            assert!(there(create_dir(&at)), "folder {name}");
+            assert!(there(move_file(&note, &at)), "move onto {name}");
             assert!(is_link(&at), "{name} is still a link");
         }
         let said = write_atomic(&d.join("Dangling.md"), b"x").unwrap_err();
@@ -399,9 +404,10 @@ mod tests {
             d.join("Dangling.md").display()
         );
         assert_eq!(said.to_string(), words);
+        assert_eq!(std::fs::read(&note).unwrap(), b"kept", "nothing moved");
         assert_eq!(
             files(&d),
-            ["Dangling.md", "Folder", "Folder.md"],
+            ["Dangling.md", "Folder", "Folder.md", "Note.md"],
             "nothing made through a link to nothing"
         );
         assert!(files(&d.join("Folder")).is_empty());
