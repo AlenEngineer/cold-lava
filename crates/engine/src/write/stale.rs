@@ -6,7 +6,9 @@
 //! text (before the swap), the text the swap took out (after it), or another program's text
 //! `put_back` was handing back. So one is removed only when it holds what its file holds now,
 //! or nothing (a kill before the bytes went in); any other is kept beside the file under a
-//! kept name (`kept::keep`), never removed.
+//! kept name (`kept::keep`), never removed. The file is read only when it is a regular file of
+//! the staged file's length (`same_length`): a pipe is never read, nor a file that can't be a
+//! copy, whatever its size.
 //!
 //! Which files are a dead cold-lava's is told by the name (`name::staged_for`: no kept text's
 //! name reads as one), the PID in it (no process has it here, `dead`) and its age (`AGE`). A
@@ -109,10 +111,39 @@ fn clear(dir: &Path, wait: Duration, age: Duration) -> Swept {
             None => continue,
         }
         let file = dir.join(file);
-        let now = std::fs::read(&file).unwrap_or_default();
-        kept::keep(&file, &file, &entry.path(), &[now.as_slice(), b""]);
+        let now = match meta.len() {
+            0 => Some(Vec::new()),
+            len => same_length(&file, len),
+        };
+        let droppable: Vec<&[u8]> = now.iter().map(Vec::as_slice).collect();
+        kept::keep(&file, &file, &entry.path(), &droppable);
     }
     swept
+}
+
+/// What `file` holds, when it is a regular file of `len` bytes (not a link, a pipe or a
+/// device: opened without following a link and without waiting, then checked by what was
+/// opened); None otherwise, and then the staged file it is compared with counts as different
+/// and is kept. A pipe read whole never returns, and a file of another length can't be a copy,
+/// so neither is read.
+fn same_length(file: &Path, len: u64) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK;
+        options.custom_flags(flags.bits() as i32);
+    }
+    let opened = options.open(file).ok()?;
+    let meta = opened.metadata().ok()?;
+    if !meta.is_file() || meta.len() != len {
+        return None;
+    }
+    let mut now = Vec::new();
+    opened.take(len + 1).read_to_end(&mut now).ok()?;
+    (now.len() as u64 == len).then_some(now)
 }
 
 /// How long ago a file was last written or renamed: the later of its mtime and its ctime
@@ -231,6 +262,27 @@ mod tests {
             assert!(left.contains(stays), "{stays} stays: {left:?}");
         }
         assert_eq!(std::fs::read(d.join("N.md")).unwrap(), b"now");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A leftover named for a pipe (or anything not a regular file of its length) is kept,
+    /// and the pipe is never read: a read with no writer would never return.
+    #[test]
+    fn a_leftover_for_a_pipe_is_kept_without_reading_it() {
+        let d = dir("pipe");
+        let mode = rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR;
+        rustix::fs::mkfifoat(rustix::fs::CWD, d.join("pipe"), mode).unwrap();
+        let staged = format!(".pipe.cold-lava-{}-0.tmp", dead());
+        leave(&d, &staged, "a text", Duration::from_secs(600));
+        assert_eq!(clear(&d, lock::WAIT, Duration::ZERO), Swept::Done);
+        let left = files(&d);
+        assert!(!left.contains(&staged), "{left:?}");
+        let keeps: Vec<_> = left
+            .iter()
+            .filter(|f| f.starts_with(".pipe.cold-lava-kept-"))
+            .collect();
+        assert_eq!(keeps.len(), 1, "{left:?}");
+        assert_eq!(std::fs::read(d.join(keeps[0])).unwrap(), b"a text");
         let _ = std::fs::remove_dir_all(&d);
     }
 

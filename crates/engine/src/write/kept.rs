@@ -16,7 +16,9 @@ use super::name::reserved;
 /// is kept (`kept_name`) and named by `Kept`; if that move fails, it stays in `out`, which is
 /// named instead.
 pub(super) fn keep(path: &Path, file: &Path, out: &Path, droppable: &[&[u8]]) -> WriteError {
-    if std::fs::read(out).is_ok_and(|now| droppable.contains(&now.as_slice())) {
+    let dropped = !droppable.is_empty()
+        && std::fs::read(out).is_ok_and(|now| droppable.contains(&now.as_slice()));
+    if dropped {
         let _ = std::fs::remove_file(out);
         return WriteError::Changed(path.to_path_buf());
     }
