@@ -90,8 +90,7 @@ pub fn ensure(root: &Path, date: NaiveDate) -> Result<PathBuf> {
     let new = files::new_path(root, &s.rel_path(date))
         .map_err(|e| refused("the daily note's path from the folder and format", e))?;
     let path = new.path().to_path_buf();
-    // `new_path` refused a link at the path, so `exists` reads the entry itself (#410).
-    if path.exists() {
+    if crate::write::taken(&path) {
         return Ok(path);
     }
     let rel = new.rel();
