@@ -6940,7 +6940,6 @@ mod tests {
                 moving: Vec::new(),
                 edits: Vec::new(),
                 warnings: Vec::new(),
-                root: PathBuf::new(),
             }),
             scroll: 0,
             marked: false,

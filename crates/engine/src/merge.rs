@@ -79,8 +79,9 @@ impl Merge {
 #[derive(Clone, Debug)]
 pub struct Merged {
     root: PathBuf,
-    /// Workspace-relative, with `.md`.
+    /// Workspace-relative, with `.md`: what `undo` restores to, through `files::resolve`.
     source: String,
+    /// Where the source was, for the menu to show and open; `undo` never acts on it.
     pub source_path: PathBuf,
     pub target_path: PathBuf,
     pub trashed: Trashed,
@@ -356,14 +357,11 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
 /// taken, or a folder on the way to it is now a symlink (`files::resolve`, #397).
 pub fn undo(m: &Merged) -> Result<()> {
     m.written.check("merge")?;
-    if write::taken(&m.source_path) {
-        bail!(
-            "{} exists again; the merge can't be undone",
-            m.source_path.display()
-        );
+    let path = crate::files::resolve(&m.root, &m.source)?;
+    if write::taken(&path) {
+        bail!("{} exists again; the merge can't be undone", path.display());
     }
-    crate::files::resolve(&m.root, &m.source)?;
-    trash::restore(&m.trashed, &m.source_path)?;
+    trash::restore(&m.trashed, &path)?;
     m.written.put_back().context("putting the files back")?;
     Ok(())
 }

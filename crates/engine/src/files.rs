@@ -182,7 +182,7 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, Error> {
 /// The entry at `rel` itself, for `workspace/stat` and `workspace/delete`: as `resolve`, but
 /// the last part may be a symlink, and is then the entry, whatever it points to. No folder on
 /// the way to it may be one.
-fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
+pub(crate) fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
     let path = normal(rel)?;
     let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
     unlinked(root, &path, folder)?;

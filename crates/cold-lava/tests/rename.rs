@@ -103,3 +103,39 @@ fn a_rename_into_a_folder_that_is_a_symlink_is_refused() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #397, the source side: `cold-lava rename WS Alias/Sub Taken/`, with `Alias` a symlink to a
+/// folder outside the workspace, is refused naming the link, so the folder outside is neither
+/// pulled into the workspace nor taken from where it was.
+#[cfg(unix)]
+#[test]
+fn a_rename_out_of_a_folder_that_is_a_symlink_is_refused() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("rename-from-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (ws, home, outside) = (dir.join("ws"), dir.join("home"), dir.join("outside"));
+    for folder in [&ws, &home, &outside.join("Sub")] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    std::fs::write(ws.join("Lava.md"), "# Lava\n").unwrap();
+    std::fs::write(outside.join("Sub/Pumice.md"), "light\n").unwrap();
+    std::os::unix::fs::symlink("../outside", ws.join("Alias")).unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_cold-lava"))
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .args(["rename", ws.to_str().unwrap(), "Alias/Sub", "Taken/"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("Alias is a symbolic link"), "{stderr}");
+    let read = std::fs::read_to_string(outside.join("Sub/Pumice.md")).unwrap();
+    assert_eq!(read, "light\n");
+    assert!(
+        !ws.join("Taken").exists(),
+        "nothing came into the workspace"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
