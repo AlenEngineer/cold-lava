@@ -1,7 +1,8 @@
 //! Daily notes, following the workspace's Obsidian "Daily notes" settings
 //! (`.obsidian/daily-notes.json`: folder, moment.js date format, template).
 
-use anyhow::{Context, Result};
+use crate::files;
+use anyhow::{Context, Result, anyhow};
 use chrono::{Datelike, Local, NaiveDate, NaiveTime, Timelike, Weekday};
 use regex::Regex;
 use std::collections::HashMap;
@@ -72,18 +73,32 @@ pub fn parse_cli_date(s: &str) -> Result<NaiveDate> {
     })
 }
 
-/// Create the daily note for `date` if needed (from the template). Returns its path.
+/// Create the daily note for `date` if needed (from the template). Returns its path. Another
+/// program may have written the settings, so the note goes only where a new file may
+/// (`files::new_path`) and the template is read only where the gateway reads (`files::resolve`).
 pub fn ensure(root: &Path, date: NaiveDate) -> Result<PathBuf> {
     let s = Settings::load(root);
-    let rel = s.rel_path(date);
-    let path = root.join(&rel);
+    let refused = |what: &str, e: crate::gateway::Error| {
+        anyhow!(
+            "{what} in .obsidian/daily-notes.json is refused: {}",
+            e.message
+        )
+    };
+    if !s.folder.is_empty() {
+        files::new_path(root, &s.folder).map_err(|e| refused("the daily note's folder", e))?;
+    }
+    let new = files::new_path(root, &s.rel_path(date))
+        .map_err(|e| refused("the daily note's path from the folder and format", e))?;
+    let path = new.path().to_path_buf();
+    // `new_path` refused a link at the path, so `exists` reads the entry itself (#410).
     if path.exists() {
         return Ok(path);
     }
+    let rel = new.rel();
     let title = rel
         .rsplit('/')
         .next()
-        .unwrap_or(&rel)
+        .unwrap_or(rel)
         .trim_end_matches(".md")
         .to_string();
     let body = match &s.template {
@@ -93,7 +108,9 @@ pub fn ensure(root: &Path, date: NaiveDate) -> Result<PathBuf> {
             } else {
                 format!("{t}.md")
             };
-            let text = std::fs::read_to_string(root.join(&t))
+            let at =
+                files::resolve(root, &t).map_err(|e| refused("the daily note's template", e))?;
+            let text = std::fs::read_to_string(at)
                 .with_context(|| format!("reading the daily-note template {t}"))?;
             let now = date.and_time(Local::now().time());
             crate::templates::fill(&text, &title, now, "YYYY-MM-DD", "HH:mm")
