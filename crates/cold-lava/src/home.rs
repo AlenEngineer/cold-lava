@@ -4939,14 +4939,14 @@ impl Home {
             self.undo.push(Undo::Delete(batch));
             return self.flash(msg);
         }
-        let taken = batch.iter().any(|t| t.from.exists());
         let batch: Vec<(Gone, PathBuf)> = (batch.into_iter())
             .map(|t| {
                 let to = trash::free_path(&t.from);
                 (t, to)
             })
             .collect();
-        if taken {
+        // An old name is taken when `free_path` gave another.
+        if batch.iter().any(|(t, to)| *to != t.from) {
             self.mode = Mode::ConfirmRestore(batch);
             return;
         }
@@ -5131,7 +5131,7 @@ impl Home {
                         .unwrap_or_default()
                 };
                 let taken: Vec<&(Gone, PathBuf)> =
-                    batch.iter().filter(|(t, _)| t.from.exists()).collect();
+                    batch.iter().filter(|(t, to)| *to != t.from).collect();
                 let lines = match taken.as_slice() {
                     [(t, to)] if batch.len() == 1 => vec![
                         Line::styled(
