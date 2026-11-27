@@ -1094,6 +1094,48 @@ mod tests {
         );
     }
 
+    /// A check right after a key, a click or a write can read the screen before the program
+    /// has drawn what the step did: on a slow machine it fails, or it passes on the screen from
+    /// before (#234). So every script waits first, best for what the step shows (`wait-for`,
+    /// `wait-for-in`). The program's start counts as a step. Every step is named below, so a
+    /// new one is sorted before it is used.
+    #[test]
+    fn scripts_wait_before_they_check_what_a_step_did() {
+        let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/drive");
+        let mut hurried = Vec::new();
+        for entry in std::fs::read_dir(&scripts).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension() != Some(std::ffi::OsStr::new("drive")) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let script = read(&text).unwrap();
+            let mut acted = true;
+            for step in &script.steps {
+                match step.action {
+                    Action::Send(_)
+                    | Action::Click { .. }
+                    | Action::Drag { .. }
+                    | Action::Scroll { .. }
+                    | Action::Write { .. } => acted = true,
+                    Action::WaitFor { .. }
+                    | Action::WaitForIn { .. }
+                    | Action::WaitGone { .. }
+                    | Action::Wait(_)
+                    | Action::Exits { .. } => acted = false,
+                    Action::Expect(_) | Action::ExpectIn { .. } | Action::ExpectNot(_) => {
+                        if acted {
+                            let line = text.lines().nth(step.line - 1).unwrap_or_default();
+                            hurried.push(format!("{}:{}: {line}", path.display(), step.line));
+                        }
+                    }
+                    Action::Screen => {}
+                }
+            }
+        }
+        assert_eq!(hurried, Vec::<String>::new());
+    }
+
     /// The program draws LATE in row 3 after 300 ms: the wait there sees it once it is drawn,
     /// and a wait above it gives up when its time is out, though LATE is on the screen.
     #[cfg(unix)]

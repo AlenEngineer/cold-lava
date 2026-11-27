@@ -1396,35 +1396,6 @@ fn scripts_wait_after_esc_before_the_next_key() {
     assert_eq!(hurried, Vec::<String>::new());
 }
 
-/// A check right after a key, a click or a write can read the screen before the program has
-/// drawn what the step did: on a slow machine it fails, or it passes on the screen from before
-/// (#234). So a wait comes first, best for what the step shows (`wait-for`, `wait-for-in`).
-/// The program's start counts as a step.
-#[test]
-fn scripts_wait_before_they_check_what_a_step_did() {
-    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/drive");
-    let mut hurried = Vec::new();
-    for entry in std::fs::read_dir(&scripts).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension() != Some(std::ffi::OsStr::new("drive")) {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).unwrap();
-        let mut acted = true;
-        for (i, line) in text.lines().enumerate() {
-            match line.split_whitespace().next() {
-                Some("keys" | "type" | "click" | "drag" | "scroll" | "write") => acted = true,
-                Some("wait-for" | "wait-for-in" | "wait-gone" | "wait" | "exits") => acted = false,
-                Some("expect" | "expect-in" | "expect-not") if acted => {
-                    hurried.push(format!("{}:{}: {line}", path.display(), i + 1));
-                }
-                _ => {}
-            }
-        }
-    }
-    assert_eq!(hurried, Vec::<String>::new());
-}
-
 /// Needs Neovim, which CI doesn't have; runs wherever `nvim` is on PATH.
 #[test]
 fn restarts_the_embedded_neovim() {
