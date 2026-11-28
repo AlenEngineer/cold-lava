@@ -210,10 +210,15 @@ fn at(root: &Path, rel: &str) -> Result<PathBuf, Error> {
 /// the last part may be a symlink, and is then the entry, whatever it points to. No folder on
 /// the way to it may be one.
 pub(crate) fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
-    let path = normal_or_kept(root, rel)?;
-    let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
-    unlinked(root, &path, folder)?;
-    Ok(root.join(path))
+    entry_at(root, &normal(rel)?)
+}
+
+/// The entry at `rel`, already spelled as `normal` or `normal_or_kept` spells it: as
+/// `resolve_entry` judges it, the last part taken as the entry.
+fn entry_at(root: &Path, rel: &str) -> Result<PathBuf, Error> {
+    let folder = rel.rsplit_once('/').map_or("", |(folder, _)| folder);
+    unlinked(root, rel, folder)?;
+    Ok(root.join(rel))
 }
 
 /// `rel` in its one spelling: its parts joined by single `/`, with no slash at either end.
@@ -248,13 +253,8 @@ pub fn normal_or_kept(root: &Path, rel: &str) -> Result<String, Error> {
         Ok(rel) => return Ok(rel),
         Err(refused) => refused,
     };
-    let (folder, name) = rel.rsplit_once('/').unwrap_or(("", rel));
-    if rel.starts_with('/') || name.contains('\0') {
+    let Some((folder, name)) = kept_spelled(rel) else {
         return Err(refused);
-    }
-    let folder = match folder {
-        "" => String::new(),
-        folder => normal(folder).map_err(|_| refused.clone())?,
     };
     if !folder.is_empty() {
         unlinked(root, &folder, &folder)?;
@@ -264,15 +264,46 @@ pub fn normal_or_kept(root: &Path, rel: &str) -> Result<String, Error> {
     if !kept.iter().any(named) {
         return Err(refused);
     }
-    Ok(match folder.as_str() {
+    Ok(joined(&folder, name))
+}
+
+/// Whether `rel` is named as a kept text is (`kept_spelled`), whether or not one is there: a
+/// permission for it is judged by that, never by its own suffix (`.Lava.md.cold-lava-7-0.tmp`
+/// is a note's text, not a `tmp` file).
+pub fn names_kept(rel: &str) -> bool {
+    normal(rel).is_err() && kept_spelled(rel).is_some()
+}
+
+/// `rel` as a folder `normal` spells (empty at the root) and a last part named as a kept text
+/// or a staged file is (`write::names_outside`), by its name alone.
+fn kept_spelled(rel: &str) -> Option<(String, &str)> {
+    let (folder, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+    if rel.starts_with('/') || name.contains('\0') || !write::names_outside(name) {
+        return None;
+    }
+    let folder = match folder {
+        "" => String::new(),
+        folder => normal(folder).ok()?,
+    };
+    Some((folder, name))
+}
+
+fn joined(folder: &str, name: &str) -> String {
+    match folder {
         "" => name.to_string(),
         folder => format!("{folder}/{name}"),
-    })
+    }
 }
 
 /// `workspace/kept`: in each folder the scan reads (`workspace::is_skipped`, no symlink
 /// followed), what `write::find_kept` finds, named from `root`. A text whose version can't be
 /// read (gone since it was found) is left out.
+///
+/// The cost is stated: a walk of its own, apart from the scan's, one listing of every folder,
+/// as the core opens, on each rescan and when a kept name is heard. Kept apart so the scan
+/// stays a reading of notes and the finder one rule; a workspace of 3300 folders measured
+/// 50 to 70 ms more to open on the PR's review (#445), one of a handful of folders nothing.
+/// Folding it into the scan's walk is #447's, should that cost matter.
 pub fn kept(root: &Path) -> KeptTexts {
     let folders = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
         e.depth() == 0
@@ -294,6 +325,49 @@ pub fn kept(root: &Path) -> KeptTexts {
     }
     kept.sort_by(|a, b| a.kept.cmp(&b.kept));
     KeptTexts { kept }
+}
+
+/// The texts kept outside their files as the core last listed them (`kept`), and whether
+/// something heard since may have changed them: a tool the core holds one of and asks.
+#[derive(Debug, Default)]
+pub(crate) struct KeptList {
+    listed: KeptTexts,
+    heard: bool,
+}
+
+impl KeptList {
+    /// Listed now, in the workspace at `root`.
+    pub(crate) fn open(root: &Path) -> KeptList {
+        KeptList {
+            listed: kept(root),
+            heard: false,
+        }
+    }
+
+    pub(crate) fn texts(&self) -> &KeptTexts {
+        &self.listed
+    }
+
+    /// Something happened at `path` (the watcher heard it, or the core moved it): news when it
+    /// is named as a kept text is, or is one listed (a leftover the sweep took away).
+    pub(crate) fn heard(&mut self, root: &Path, path: &Path) {
+        let named = path.file_name().and_then(|n| n.to_str());
+        let listed = || (self.listed.kept.iter()).any(|k| root.join(&k.kept) == path);
+        if named.is_some_and(|n| write::kept_for(n).is_some()) || listed() {
+            self.heard = true;
+        }
+    }
+
+    /// List again when something was heard, or `anyway` (a rescan): whether the list changed.
+    pub(crate) fn again(&mut self, root: &Path, anyway: bool) -> bool {
+        if !std::mem::take(&mut self.heard) && !anyway {
+            return false;
+        }
+        let now = kept(root);
+        let changed = now != self.listed;
+        self.listed = now;
+        changed
+    }
 }
 
 /// Refused when `parts` under `root`, or a folder on the way to it, is a symlink: the gateway
@@ -442,9 +516,10 @@ fn free_name(index: &Index, name: &str, extension: &str) -> String {
     }
 }
 
-/// What is at `rel` now. Nothing there is `changed`.
+/// What is at `rel` now, spelled by `normal_or_kept`, the entry itself. Nothing there is
+/// `changed`.
 fn contents(root: &Path, rel: &str) -> Result<Seen, Error> {
-    let path = resolve_entry(root, rel)?;
+    let path = entry_at(root, rel)?;
     Seen::entry(&path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => Error::new(Reason::Changed, format!("{rel} is gone")),
         _ => io(rel)(e),
@@ -516,7 +591,11 @@ pub fn restore(root: &Path, trashed: &Trashed, to: Option<&str>) -> Result<Resto
         }
         _ => from,
     };
-    let path = resolve(root, &rel)?;
+    // A kept text goes back under the hidden name it was found at, never another.
+    let path = match kept_spelled(&rel) {
+        Some((folder, name)) if names_kept(&rel) => at(root, &joined(&folder, name))?,
+        _ => resolve(root, &rel)?,
+    };
     if trashed.at.symlink_metadata().is_err() {
         let message = format!("{rel} is no longer in the trash");
         return Err(Error::new(Reason::Changed, message));

@@ -165,8 +165,9 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   what comes out too: a newer text that landed in between is swapped in again, so the newest
   stays at the path and the older is kept beside the file as
   `.Name.cold-lava-kept-SECONDS-N.ext` and named (`Kept`, the gateway's `kept`).
-  `find_kept` is the one finder of kept texts and of killed saves' leftovers, and the core
-  lists them (`Core::kept_texts`, `workspace/kept`, `Event::KeptChanged`, #427). After 16 rounds (`ROUNDS`, a writer that doesn't stop) or a
+  `find_kept` (`write/find.rs`) is the one finder of kept texts and of killed saves'
+  leftovers, and the core lists them (`files::KeptList`, `Core::kept_texts`,
+  `workspace/kept`, `Event::KeptChanged`, #427). After 16 rounds (`ROUNDS`, a writer that doesn't stop) or a
   swap that fails, the path may hold an older text: the newer one is then kept beside it and
   named, never removed. Where the file system can't swap, the file is moved aside
   by one rename onto a name it reserved and compared there. A text the engine took out is
@@ -191,8 +192,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   system with neither rename flags nor hard links, `no_replace`'s check-then-rename
   (`os_rename::by_link`), which `create`, `move_file` and `replace`'s aside all go through.
   A save killed halfway leaves its staged `.Name.cold-lava-PID-N.tmp`: the first write a
-  process stages in a folder clears those of dead PIDs (`write/stale.rs`: put back at its file's
-  path when nothing is there, removed when a copy of the file or empty, kept under a kept
+  process stages in a folder clears those of dead PIDs (`write/stale.rs`: a file `aside` moved out,
+  under its own `.aside` name, put back at its path when nothing is there, removed when a copy of the file or empty, kept under a kept
   name otherwise; a kept text never). It holds the
   folder's turn while it does (`lock.rs`), so a live `replace` it can't see by PID (another
   container's, another machine's) keeps its staged file; where the turn can't be had (NFS, a
@@ -505,8 +506,9 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   only the client it was given to can use, kept in the core's `Trash` and gone with the core),
   `workspace/restore` (never over something; `to` is a new name) and `workspace/create-folder`.
   `workspace/kept` lists the texts kept outside their files (docs/extensions.md, "Kept texts,
-  as built"); `read`, `stat` and `delete` take such a hidden path (`normal_or_kept`), nothing
-  else does.
+  as built"); `read`, `stat`, `delete` and `restore` take such a hidden path
+  (`normal_or_kept`), nothing else does, and the host asks `files.read` for one
+  (`names_kept`), never its suffix's owner.
   `new_path` is the one check of where a new file or folder goes (`normal`, then
   `rename::check_path`, then `resolve`: inside the workspace, no symlink on the way), and a
   `NewPath` only it makes: `create-folder`, the menu's new note, the switcher's, a link

@@ -1,15 +1,14 @@
 //! What a write does with a text it took out of a file and can't put back: removed when it is
 //! only the caller's or the write's own, kept beside the file under a name of its own
-//! otherwise (`kept_name`), never removed. `replace` and `stale` both keep through it. It is
-//! also the one finder of such texts (`find`), which the core lists so the user sees them
-//! (#427). A leaf but for `name::reserved`, `stale::left` and the `WriteError` it answers.
+//! otherwise (`kept_name`), never removed. `replace` and `stale` both keep through it, and
+//! `find` reads the name back (`kept_for`). A leaf but for `name::reserved` and the
+//! `WriteError` it answers.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::WriteError;
 use super::name::reserved;
-use super::stale::{self, Left};
 
 /// The refusal for a text this write took out of `file` (where `path` lands) and holds in
 /// `out`, a name of its own beside it that nothing else writes. When it is one of `droppable`
@@ -80,51 +79,9 @@ pub(crate) fn kept_for(name: &str) -> Option<String> {
 /// The part of a kept text's name between the file's stem and the ids.
 const KEPT: &str = ".cold-lava-kept-";
 
-/// A text outside the file it was taken from, found in a folder: `file` is the file's path,
-/// `kept` where the text is.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Outside {
-    pub file: PathBuf,
-    pub kept: PathBuf,
-}
-
-/// Every text in `dir` that is outside its file, sorted by where it is: the ones kept under a
-/// kept name (`kept_for`), and the staged files dead cold-lavas left that no sweep has cleared
-/// (`stale::left`, older than `stale::AGE`), as on a file system without the folder's lock,
-/// where a save killed after moving a note aside leaves the note's only text under its
-/// staged name (#427). Only regular files are found.
-pub fn find(dir: &Path) -> Vec<Outside> {
-    find_left(dir, stale::AGE)
-}
-
-/// `find`, with the staged files left older than `age`.
-fn find_left(dir: &Path, age: std::time::Duration) -> Vec<Outside> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut found = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let file = match name.to_str().and_then(kept_for) {
-            Some(file) if entry.file_type().is_ok_and(|t| t.is_file()) => file,
-            Some(_) => continue,
-            None => match stale::left(&entry, age) {
-                Left::Old(file) => file,
-                Left::Not | Left::Young => continue,
-            },
-        };
-        found.push(Outside {
-            file: dir.join(file),
-            kept: entry.path(),
-        });
-    }
-    found.sort_by(|a, b| a.kept.cmp(&b.kept));
-    found
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Outside, find, find_left, kept_for, kept_name};
+    use super::{kept_for, kept_name};
     use std::path::Path;
 
     #[test]
@@ -157,55 +114,5 @@ mod tests {
         ] {
             assert_eq!(kept_for(not), None, "{not}");
         }
-    }
-
-    /// The finder lists kept texts and the staged files dead cold-lavas left that are old
-    /// enough to clear, with the file each is for; never a live save's staged file, a young
-    /// one, another hidden file or a folder under a kept name.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    #[test]
-    fn kept_texts_and_what_killed_saves_left_are_found() {
-        use std::time::{Duration, SystemTime};
-        let d = std::env::temp_dir().join(format!("cold-lava-kept-find-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        let dead = i32::MAX as u32;
-        let live = std::process::id();
-        let leave = |name: &str, ago: Duration| {
-            std::fs::write(d.join(name), "a text").unwrap();
-            let f = std::fs::File::options()
-                .write(true)
-                .open(d.join(name))
-                .unwrap();
-            f.set_modified(SystemTime::now() - ago).unwrap();
-        };
-        let long = Duration::from_secs(600);
-        std::fs::write(d.join("N.md"), "now").unwrap();
-        leave(".N.cold-lava-kept-5-0.md", long);
-        leave(&format!(".M.md.cold-lava-{dead}-0.tmp"), long);
-        leave(&format!(".N.md.cold-lava-{live}-1.tmp"), long);
-        leave(".hidden.md", long);
-        std::fs::create_dir(d.join(".F.cold-lava-kept-5-1.md")).unwrap();
-        assert_eq!(
-            find(&d).len(),
-            1,
-            "what was left was renamed just now (ctime)"
-        );
-        let found = find_left(&d, Duration::ZERO);
-        let staged = d.join(format!(".M.md.cold-lava-{dead}-0.tmp"));
-        assert_eq!(
-            found,
-            [
-                Outside {
-                    file: d.join("M.md"),
-                    kept: staged,
-                },
-                Outside {
-                    file: d.join("N.md"),
-                    kept: d.join(".N.cold-lava-kept-5-0.md"),
-                },
-            ]
-        );
-        let _ = std::fs::remove_dir_all(&d);
     }
 }

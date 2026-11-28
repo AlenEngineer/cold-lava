@@ -321,8 +321,7 @@ impl Host<'_> {
 
     /// `workspace/read`
     pub fn read_file(&mut self, path: &str) -> Result<Text, gateway::Error> {
-        self.files_core(files::extension_of(path), false)?
-            .read_file(path)
+        self.files_core(kind_of(path), false)?.read_file(path)
     }
 
     /// `workspace/write`: refused unless the file is still the version `expect`.
@@ -351,7 +350,7 @@ impl Host<'_> {
     /// `workspace/stat`: a read, so the owner of the file's kind or `files.read`. A folder
     /// answers with what is in it, so it needs `files.read` whatever it is called.
     pub fn stat_file(&mut self, path: &str) -> Result<Stat, gateway::Error> {
-        let core = self.files_core(files::extension_of(path), false)?;
+        let core = self.files_core(kind_of(path), false)?;
         let stat = core.stat_file(path)?;
         if stat.inside.is_some() {
             self.may(Permission::FilesRead)?;
@@ -390,6 +389,16 @@ impl Host<'_> {
     pub fn create_folder(&mut self, path: &str) -> Result<Folder, gateway::Error> {
         let name = self.name;
         self.core(Permission::FilesWrite)?.create_folder(name, path)
+    }
+}
+
+/// The kind of file at `path` a read is judged by: its suffix, or none for a kept text's
+/// hidden name (`files::names_kept`), whose suffix is not its file's (a killed save's
+/// `.Lava.md.cold-lava-7-0.tmp`), so reading one needs `files.read` whatever its owner owns.
+fn kind_of(path: &str) -> Option<String> {
+    match files::names_kept(path) {
+        true => None,
+        false => files::extension_of(path),
     }
 }
 

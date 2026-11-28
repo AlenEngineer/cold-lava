@@ -1673,9 +1673,11 @@ When two other programs save a note in the moment a cold-lava save of it is unde
 engine can't always put back the text it took out of the file: it keeps it beside the file,
 under a hidden name (`.Lava.cold-lava-kept-1700000000-0.md` beside `Lava.md`), and the save is
 refused as `kept` with both names. A cold-lava killed during a save can leave the same under
-its staged name (`.Lava.md.cold-lava-PID-N.tmp`): the first write in that folder clears it,
-putting a note's only text back at its path when nothing is there, but where that clearing
-can't run (a file system without the folder's lock, as NFS is) it stays. Hidden, so the scan,
+its staged name (`.Lava.md.cold-lava-PID-N.tmp`, or `….aside` for a note moved aside where
+files can't be swapped): the first write in that folder clears it, putting a note moved aside
+back at its path when nothing is there (any other staged file at an empty path is one another
+program deleted or renamed since, and is kept), but where that clearing can't run (a file
+system without the folder's lock, as NFS is) it stays. Hidden, so the scan,
 the tree and Obsidian pass it by, which is what keeps it from becoming a second note with the
 same links and tags. So the core lists them, and every frontend shows them until they are
 dealt with:
@@ -1689,21 +1691,27 @@ dealt with:
 {"kept": [{"path": "Concepts/Lava.md", "kept": "Concepts/.Lava.cold-lava-kept-1700000000-0.md", "rev": "9c1d0a52e17b3f04"}]}
 ```
 
-- **Found by one finder.** `write::find_kept` reads a folder: a kept name, or a staged file a
-  dead cold-lava left that the clearing would take (`stale::left`, the same test). The core
+- **Found by one finder.** `write::find_kept` (`write/find.rs`) reads a folder: a kept name,
+  or a staged file a dead cold-lava left that the clearing would take (`stale::left`, the same
+  test), not an empty one. The core
   lists every folder the scan reads as it opens, again when its watcher hears a kept name,
   on a rescan and after its own delete or restore, and says `KeptChanged` when the list
   changed. The list is in memory: asking costs no read of the disk.
 - **Read and put away with the file messages.** `workspace/read` and `workspace/stat` take
   a `kept` path, and `workspace/delete` puts one away to the trash (`files.delete`), as for
   any file: `files::normal_or_kept` lets through a hidden name only when the finder finds it
-  in its folder. Nothing writes, makes or moves a file under such a name, so comparing it with
-  the note and putting it back are the client's: read both, `workspace/write` the note with
-  what it wants, then delete the kept text.
+  in its folder, and `workspace/restore` puts one put away back under its hidden name.
+  Nothing else writes, makes or moves a file under such a name (a rename's source is
+  `normal`'s), so comparing it with the note and putting it back over the note are the
+  client's: read both, `workspace/write` the note with what it wants, then delete the kept
+  text.
+- **Its permission is `files.read`** (and `files.delete` to put one away), whatever kinds the
+  asker owns: a kept text's hidden name ends in its file's suffix, a killed save's in `tmp`,
+  and neither is a kind it is judged by (`files::names_kept`).
 - **In the terminal** the built-in extension `kept` (`crates/cold-lava/src/kept_ext.rs`) asks
   the gateway once a frame and says how many there are on its part of the status line;
   its command (`kept.open`, "Kept texts" in the palette) lists them by the note each is for,
-  Enter opens one in the reader and `d` puts it away to the trash.
+  Enter opens one in the reader, `d` puts it away to the trash and `u` puts it back.
 
 ### Owners and types, as built
 

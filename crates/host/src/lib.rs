@@ -822,6 +822,58 @@ mod tests {
         assert!(r.shows(ExtId(1), 1) && !r.shows(ExtId(1), 0));
     }
 
+    /// A kept text's hidden name ends in its file's suffix, or a staged file's `tmp`: neither
+    /// is a kind its owner may read it by. Reading or stating one, or listing them, needs
+    /// `files.read`, and putting one away `files.delete`, whatever kinds the asker owns.
+    #[test]
+    fn kept_texts_need_files_read_whatever_kinds_are_owned() {
+        use Permission::{FilesDelete, FilesRead};
+        let dir = std::env::temp_dir().join(format!("cold-lava-ext-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        std::fs::write(dir.join("Eruptions.csv"), "name\n").unwrap();
+        let kept = ".Eruptions.cold-lava-kept-5-0.csv";
+        std::fs::write(dir.join(kept), "theirs").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        core.set_system_trash(None);
+        let rev = files::read(core.root(), kept).unwrap().rev;
+        let owner = |name, opens, permissions| Owner {
+            name,
+            opens,
+            permissions,
+        };
+        let mut r = owners(vec![
+            owner("sheets", &["csv", "tmp"], Vec::new()),
+            owner("look", &[], vec![FilesRead]),
+            owner("tidy", &[], vec![FilesRead, FilesDelete]),
+        ]);
+        let mut asked = |ext: usize, f: &dyn Fn(&mut Host<'_>) -> Result<(), gateway::Error>| {
+            let mut answer = None;
+            r.call(ExtId(ext), Some(&mut core), |_, host| {
+                answer = Some(f(host))
+            });
+            answer.unwrap().map_err(|e| e.reason)
+        };
+        let forbidden = Err(Reason::Forbidden);
+        let read = |path: &'static str| move |h: &mut Host<'_>| h.read_file(path).map(drop);
+        let stat = |path: &'static str| move |h: &mut Host<'_>| h.stat_file(path).map(drop);
+        let listed = |h: &mut Host<'_>| h.kept_texts().map(drop);
+        let staged = ".Eruptions.csv.cold-lava-2147483647-0.tmp";
+        for path in [kept, staged] {
+            assert_eq!(asked(0, &read(path)), forbidden, "{path}");
+            assert_eq!(asked(0, &stat(path)), forbidden, "{path}");
+        }
+        assert_eq!(asked(0, &listed), forbidden);
+        assert_eq!(asked(1, &read(kept)), Ok(()));
+        assert_eq!(asked(1, &stat(kept)), Ok(()));
+        assert_eq!(asked(1, &listed), Ok(()));
+        let put_away = move |h: &mut Host<'_>| h.delete_file(kept, &rev).map(drop);
+        assert_eq!(asked(0, &put_away), forbidden);
+        assert_eq!(asked(1, &put_away), forbidden);
+        assert_eq!(asked(2, &put_away), Ok(()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn owners_read_and_write_their_own_kinds_and_others_need_files_permissions() {
         use Permission::{FilesRead, FilesWrite};

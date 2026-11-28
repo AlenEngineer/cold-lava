@@ -140,11 +140,9 @@ pub struct Core {
     trashed: files::Trash,
     /// The system trash deletes go to, when the workspace's `trashOption` names it.
     system_trash: Option<Bin>,
-    /// The texts kept outside their files (`files::kept`), listed again when the watcher hears
-    /// a kept name or a listed leftover's (`kept_heard`), on a rescan and after the core's own
-    /// delete or restore.
-    kept: files::KeptTexts,
-    kept_heard: bool,
+    /// The texts kept outside their files, listed again when the watcher or the core's own
+    /// delete or restore touches one, and on a rescan.
+    kept: files::KeptList,
 }
 
 impl Core {
@@ -153,7 +151,7 @@ impl Core {
         let watch = Watch::start(&index.workspace.root);
         let owned = index.workspace.owned.iter();
         let unseen = owned.filter_map(|f| owned_news(None, Some(f))).collect();
-        let kept = files::kept(&index.workspace.root);
+        let kept = files::KeptList::open(&index.workspace.root);
         Ok(Core {
             index,
             watch,
@@ -174,22 +172,19 @@ impl Core {
             // This crate's tests get none unless they set one, so none reaches the real trash.
             system_trash: if cfg!(test) { None } else { system_bin() },
             kept,
-            kept_heard: false,
         })
     }
 
     /// `workspace/kept`: every text kept outside the file it was taken from, as last listed.
     pub fn kept_texts(&self) -> files::KeptTexts {
-        self.kept.clone()
+        self.kept.texts().clone()
     }
 
-    /// List the kept texts again: `KeptChanged` when they changed.
-    fn kept_again(&mut self) -> Option<Event> {
-        let now = files::kept(self.root());
-        (now != self.kept).then(|| {
-            self.kept = now;
-            Event::KeptChanged
-        })
+    /// List the kept texts again if something was heard, or `anyway`: `KeptChanged` when
+    /// they changed.
+    fn kept_again(&mut self, anyway: bool) -> Option<Event> {
+        let root = &self.index.workspace.root;
+        self.kept.again(root, anyway).then_some(Event::KeptChanged)
     }
 
     /// Use `bin` as the system trash, or none: deletes then go to the workspace's `.trash`.
@@ -799,13 +794,16 @@ impl Core {
                 Ok(scanned) => {
                     let mut events = self.rescanned(scanned);
                     events.push(Event::Rescanned);
-                    events.extend(self.kept_again());
+                    events.extend(self.kept_again(true));
                     events
                 }
                 Err(_) => Vec::new(),
             },
-            Kind::Kept => self.kept_again().into_iter().collect(),
-            Kind::GraphSettings | Kind::Staged | Kind::Ignored => Vec::new(),
+            Kind::Kept | Kind::Staged => {
+                self.kept.heard(&self.index.workspace.root, path);
+                self.kept_again(false).into_iter().collect()
+            }
+            Kind::GraphSettings | Kind::Ignored => Vec::new(),
         }
     }
 
@@ -932,9 +930,7 @@ impl Core {
             events.push(Event::GraphSettingsChanged);
         }
         let rescanned = events.contains(&Event::Rescanned);
-        if std::mem::take(&mut self.kept_heard) || rescanned {
-            events.extend(self.kept_again());
-        }
+        events.extend(self.kept_again(rescanned));
         self.broadcast(&events);
         unseen.into_iter().chain(events).collect()
     }
@@ -957,14 +953,8 @@ impl Core {
                     }
                 }
                 Kind::GraphSettings => self.graph_settings = true,
-                Kind::Kept => self.kept_heard = true,
-                // Every save stages one: only a leftover the core lists is news.
-                Kind::Staged => {
-                    let root = &self.index.workspace.root;
-                    if self.kept.kept.iter().any(|k| root.join(&k.kept) == p) {
-                        self.kept_heard = true;
-                    }
-                }
+                // Every save stages one: only a leftover the list holds is news.
+                Kind::Kept | Kind::Staged => self.kept.heard(&self.index.workspace.root, &p),
                 Kind::Folder => self.rescan = true,
                 Kind::Ignored => {}
             }
@@ -2235,7 +2225,8 @@ mod tests {
     /// Two other programs save a note while a client's save of it is under way, and one of
     /// their texts can't be put back (#427): it is kept beside the note under a hidden name.
     /// The core says so (`KeptChanged`) and lists it with the note it is for, a client reads
-    /// it by the name listed and puts it away to the trash, and then it is listed no more.
+    /// it by the name listed and puts it away to the trash, and then it is listed no more;
+    /// put back, it is where it was and listed again.
     #[test]
     fn a_text_kept_from_a_save_race_is_listed_read_and_put_away() {
         let dir = std::env::temp_dir().join(format!("cold-lava-core-kept-{}", std::process::id()));
@@ -2286,11 +2277,22 @@ mod tests {
         assert_eq!(text.text, "theirs");
         assert_eq!(text.rev, kept.rev);
         assert_eq!(read(&note), "third");
-        core.delete_file("menu", &kept.kept, &kept.rev).unwrap();
+        let gone = core.delete_file("menu", &kept.kept, &kept.rev).unwrap();
         assert_eq!(core.kept_texts().kept, [], "put away");
         assert!(core.poll().contains(&Event::KeptChanged));
         let trashed = std::fs::read_dir(bin.join("files")).unwrap().count();
         assert_eq!(trashed, 1, "in the trash, not removed");
+        let back = files::Restore {
+            trashed: gone.trashed,
+            to: None,
+        };
+        let restored = core.restore_file("menu", &back).unwrap();
+        assert_eq!(
+            restored.path, kept.kept,
+            "where it was, under its hidden name"
+        );
+        assert_eq!(core.kept_texts().kept, [kept.clone()]);
+        assert!(core.poll().contains(&Event::KeptChanged));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&bin);
     }

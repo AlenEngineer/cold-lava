@@ -7,6 +7,7 @@
 //! the new file goes in by a swap or a rename that never replaces (`os_rename`), and what came
 //! out is checked.
 
+mod find;
 mod kept;
 mod lock;
 mod name;
@@ -26,7 +27,13 @@ pub(crate) use kept::kept_for;
 pub(crate) fn is_staged(name: &str) -> bool {
     name::staged_for(name).is_some()
 }
-pub use kept::{Outside, find as find_kept};
+
+/// Whether `name` is one a text outside its file goes under: a kept text's or a staged
+/// write's, by the name alone.
+pub(crate) fn names_outside(name: &str) -> bool {
+    kept_for(name).is_some() || is_staged(name)
+}
+pub use find::{Outside, find as find_kept};
 
 #[derive(Debug)]
 pub enum WriteError {

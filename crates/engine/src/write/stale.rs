@@ -4,12 +4,14 @@
 //!
 //! What a staged file holds after a kill depends on when the kill came: the killed save's new
 //! text (before the swap), the text the swap took out (after it), the file's only text (after
-//! `aside` moved it there, where nothing is at the file's path), or another program's text
-//! `put_back` was handing back. So one that isn't empty goes back to its file's path when
-//! nothing is there (`os_rename::no_replace`, which never replaces); one is removed only when
+//! `aside` moved it out, under a name of its own, `name::aside`), or another program's text
+//! `put_back` was handing back. So a file moved aside goes back to its file's path when
+//! nothing is there (`os_rename::no_replace`, which never replaces): only there can a kill
+//! leave the path empty, and anywhere else an empty path means another program deleted or
+//! renamed the file after the kill, which putting it back would undo. One is removed only when
 //! it holds what its file holds now, or nothing (a kill before the bytes went in); any other
 //! is kept beside the file under a kept name (`kept::keep`), never removed, and the core
-//! lists it (`kept::find`). The file is read only when it is a regular file of
+//! lists it (`find::find`). The file is read only when it is a regular file of
 //! the staged file's length (`same_length`): a pipe is never read, nor a file that can't be a
 //! copy, whatever its size.
 //!
@@ -95,17 +97,17 @@ fn clear(dir: &Path, wait: Duration, age: Duration) -> Swept {
     };
     let mut swept = Swept::Done;
     for entry in entries.flatten() {
-        let file = match left(&entry, age) {
+        let (file, aside) = match left(&entry, age) {
             Left::Not => continue,
             Left::Young => {
                 swept = Swept::Again;
                 continue;
             }
-            Left::Old(file) => dir.join(file),
+            Left::Old { file, aside } => (dir.join(file), aside),
         };
         let staged = entry.path();
         let len = entry.metadata().map_or(0, |m| m.len());
-        if len > 0 && os_rename::no_replace(&staged, &file).is_ok() {
+        if aside && len > 0 && os_rename::no_replace(&staged, &file).is_ok() {
             continue;
         }
         let now = match len {
@@ -125,25 +127,29 @@ pub(super) enum Left {
     Not,
     /// A dead cold-lava's, written or renamed within the age asked for.
     Young,
-    /// A dead cold-lava's, older: the name of the file it was staged for.
-    Old(String),
+    /// A dead cold-lava's, older: the name of the file it was staged for, and whether it is
+    /// that file moved aside (`name::Staged::aside`).
+    Old { file: String, aside: bool },
 }
 
 /// Whether `entry` is a staged file a dead cold-lava left, older than `age` (`AGE` for the
-/// sweep). The one test the sweep and the finder of kept texts (`kept::find`) both ask.
+/// sweep). The one test the sweep and the finder of kept texts (`find::find`) both ask.
 pub(super) fn left(entry: &std::fs::DirEntry, age: Duration) -> Left {
     let name = entry.file_name();
-    let Some((file, pid)) = name.to_str().and_then(staged_for) else {
+    let Some(staged) = name.to_str().and_then(staged_for) else {
         return Left::Not;
     };
     let Ok(meta) = entry.metadata() else {
         return Left::Not;
     };
-    if !meta.is_file() || !dead(pid) {
+    if !meta.is_file() || !dead(staged.pid) {
         return Left::Not;
     }
     match since_changed(&meta) {
-        Some(ago) if ago > age => Left::Old(file.to_string()),
+        Some(ago) if ago > age => Left::Old {
+            file: staged.file.to_string(),
+            aside: staged.aside,
+        },
         Some(_) => Left::Young,
         None => Left::Not,
     }
@@ -294,16 +300,54 @@ mod tests {
     }
 
     /// A save killed after it moved the note aside (where files can't be swapped, `aside`)
-    /// leaves the note's only text under the staged name, and nothing at the note's path
-    /// (#427): the sweep puts it back there, never under a kept name.
+    /// leaves the note's only text under the aside name, and nothing at the note's path
+    /// (#427): the sweep puts it back there. A staged file of any other kind whose path is
+    /// empty is one another program deleted or renamed after the kill: it is kept under a kept
+    /// name, and the note is not made again, nor beside the one it was renamed to.
     #[test]
-    fn a_staged_file_that_is_a_notes_only_text_goes_back_to_its_path() {
+    fn only_a_file_moved_aside_goes_back_to_its_path() {
         let d = dir("only");
-        let staged = format!(".N.md.cold-lava-{}-0.tmp", dead());
-        leave(&d, &staged, "the only text", Duration::from_secs(600));
+        let long = Duration::from_secs(600);
+        leave(
+            &d,
+            &format!(".N.md.cold-lava-{}-0.aside", dead()),
+            "the only text",
+            long,
+        );
+        leave(
+            &d,
+            &format!(".Gone.md.cold-lava-{}-1.tmp", dead()),
+            "before the delete",
+            long,
+        );
+        std::fs::write(d.join("U.md"), "renamed from T").unwrap();
+        leave(
+            &d,
+            &format!(".T.md.cold-lava-{}-2.tmp", dead()),
+            "before the rename",
+            long,
+        );
         assert_eq!(clear(&d, lock::WAIT, Duration::ZERO), Swept::Done);
-        assert_eq!(files(&d), ["N.md"]);
         assert_eq!(std::fs::read(d.join("N.md")).unwrap(), b"the only text");
+        let left = files(&d);
+        assert!(
+            !left.contains(&"Gone.md".to_string()),
+            "not made again: {left:?}"
+        );
+        assert!(
+            !left.contains(&"T.md".to_string()),
+            "not made again: {left:?}"
+        );
+        let kept_of = |stem: &str, text: &[u8]| {
+            let kept: Vec<_> = (left.iter())
+                .filter(|f| f.starts_with(&format!(".{stem}.cold-lava-kept-")))
+                .collect();
+            assert_eq!(kept.len(), 1, "{left:?}");
+            assert_eq!(std::fs::read(d.join(kept[0])).unwrap(), text);
+        };
+        kept_of("Gone", b"before the delete");
+        kept_of("T", b"before the rename");
+        assert_eq!(left.len(), 4, "N.md, U.md and the two kept texts: {left:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -3,7 +3,8 @@
 //! killed save's leftover. The tree and Obsidian pass such a file by, so this one says how
 //! many there are on its part of the status line for as long as there are any, and its
 //! command lists them (`workspace/kept`) with the note each is for: Enter opens one in the
-//! reader (`workspace/open`), `d` puts it away to the trash (`workspace/delete`). It asks
+//! reader (`workspace/open`), `d` puts it away to the trash (`workspace/delete`) and `u` puts
+//! the last one back where it was (`workspace/restore`). It asks
 //! the gateway as any extension would, and the core's list is what it shows.
 
 use std::path::Path;
@@ -13,7 +14,7 @@ use crate::ext::{
     CommandRequest, CommandSpec, EditorRequest, Extension, Host, KEPT, Manifest, PaneNews,
     Permission,
 };
-use crate::files::{KeptText, KeptTexts};
+use crate::files::{KeptText, KeptTexts, Restore, TrashId};
 use crate::list::{Group, KeyCommand, List, Piece, Row};
 use crate::words::plural;
 
@@ -23,11 +24,16 @@ pub const OPEN: &str = "kept.open";
 /// The command `d` sends on a row: put that text away to the trash.
 const TRASH: &str = "trash";
 
+/// The command `u` sends: put the text `d` last put away back where it was.
+const UNDO: &str = "undo";
+
 /// The kept texts' extension: what it last heard from the core, and its view while open.
 #[derive(Default)]
 pub struct Kept {
     heard: Option<KeptTexts>,
     view: Option<ViewId>,
+    /// The last text put away, by its token and name, for `u`.
+    put_away: Option<(TrashId, String)>,
 }
 
 /// The list of `kept`: one row a text, by the note it is for, with where it is on the right.
@@ -52,11 +58,18 @@ pub fn list(kept: &KeptTexts) -> List {
     List {
         title: "Kept texts".into(),
         groups,
-        keys: vec![KeyCommand {
-            key: 'd',
-            command: TRASH.into(),
-            title: "to the trash".into(),
-        }],
+        keys: vec![
+            KeyCommand {
+                key: 'd',
+                command: TRASH.into(),
+                title: "to the trash".into(),
+            },
+            KeyCommand {
+                key: 'u',
+                command: UNDO.into(),
+                title: "put back".into(),
+            },
+        ],
         empty: Some("no kept texts".into()),
         filter: Default::default(),
     }
@@ -79,8 +92,13 @@ impl Kept {
             return;
         }
         host.status(status(now.kept.len()));
+        // A list that had no rows comes back on its first: the group's title does nothing.
+        let was_empty = self.heard.as_ref().is_none_or(|h| h.kept.is_empty());
+        let select = (now.kept.first())
+            .filter(|_| was_empty)
+            .map(|k| k.kept.clone());
         if let Some(view) = self.view
-            && let Err(e) = host.update_view(view, Content::List(list(&now)), None)
+            && let Err(e) = host.update_view(view, Content::List(list(&now)), select)
         {
             host.notify(format!("the kept texts couldn't be shown: {e}"));
         }
@@ -97,11 +115,40 @@ impl Kept {
         let Some(kept) = self.find(row).cloned() else {
             return;
         };
+        let name = name_of(&kept.kept).to_string();
         match host.delete_file(&kept.kept, &kept.rev) {
-            Ok(_) => host.notify(format!("put away to the trash: {}", name_of(&kept.kept))),
+            Ok(gone) => {
+                host.notify(format!("put away to the trash: {name} · u puts it back"));
+                self.put_away = Some((gone.trashed, name));
+            }
             Err(e) => host.notify(format!("not put away: {e}")),
         }
         self.hear(host);
+    }
+
+    /// `workspace/restore` of the text `trash` last put away, where it was.
+    fn undo(&mut self, host: &mut Host<'_>) {
+        let Some((trashed, name)) = self.put_away.take() else {
+            return host.notify("nothing put away to put back");
+        };
+        let restore = Restore {
+            trashed: trashed.clone(),
+            to: None,
+        };
+        match host.restore_file(&restore) {
+            Ok(_) => host.notify(format!("put back: {name}")),
+            Err(e) => {
+                host.notify(format!("not put back: {e}"));
+                self.put_away = Some((trashed, name));
+            }
+        }
+        self.hear(host);
+    }
+
+    /// The first row, for the view to open on.
+    fn first(&self) -> Option<String> {
+        let heard = self.heard.as_ref()?;
+        heard.kept.first().map(|k| k.kept.clone())
     }
 }
 
@@ -141,7 +188,7 @@ impl Extension for Kept {
         }
         self.hear(host);
         let now = self.heard.clone().unwrap_or_default();
-        match host.open_view(Content::List(list(&now)), None, None) {
+        match host.open_view(Content::List(list(&now)), self.first(), None) {
             Ok(view) => self.view = Some(view),
             Err(e) => host.notify(format!("the kept texts couldn't be shown: {e}")),
         }
@@ -158,6 +205,7 @@ impl Extension for Kept {
                     command,
                     row: Some(row),
                 } if command == TRASH => self.trash(&row, host),
+                view::Event::Command { command, .. } if command == UNDO => self.undo(host),
                 _ => {}
             },
             _ => {}
@@ -173,6 +221,7 @@ impl Extension for Kept {
     fn workspace(&mut self, _: Option<&Path>, _: &mut Host<'_>) {
         self.view = None;
         self.heard = None;
+        self.put_away = None;
     }
 }
 
@@ -183,8 +232,9 @@ mod tests {
     use crate::ext::{Effect, ExtId, Registry};
 
     /// The kept texts as an extension finds them: the status line counts them from the first
-    /// frame, the command lists them by the note each is for, and `d` on one puts it away to
-    /// the trash, after which the status line says nothing.
+    /// frame, the command lists them by the note each is for, opening on the first, `d` on
+    /// one puts it away to the trash, after which the status line says nothing, and `u` puts
+    /// it back where it was.
     #[test]
     fn the_status_line_counts_them_and_the_list_puts_one_away() {
         let dir = std::env::temp_dir().join(format!("cold-lava-kept-ext-{}", std::process::id()));
@@ -221,9 +271,16 @@ mod tests {
             args: serde_json::Value::Null,
         };
         let opened = r.call(ext, Some(&mut core), |e, h| e.command(run, h));
-        let Some(Effect::OpenView { view, content, .. }) = opened.first() else {
+        let Some(Effect::OpenView {
+            view,
+            content,
+            select,
+            ..
+        }) = opened.first()
+        else {
             panic!("{opened:?}");
         };
+        assert_eq!(select.as_deref(), Some(format!("Notes/{kept}").as_str()));
         let Content::List(shown) = content else {
             panic!("{content:?}");
         };
@@ -257,6 +314,21 @@ mod tests {
         assert!(!dir.join("Notes").join(kept).exists());
         assert!(bin.join("files").join(kept).exists(), "in the trash");
         assert_eq!(core.kept_texts(), KeptTexts::default());
+
+        let undo = ViewNews::Event(Happened {
+            view,
+            event: view::Event::Command {
+                command: UNDO.into(),
+                row: None,
+            },
+        });
+        let effects = r.call(ext, Some(&mut core), |e, h| e.view(undo, h));
+        assert_eq!(
+            statuses(&effects),
+            [Some("1 kept text · : kept texts".into())]
+        );
+        let back = std::fs::read_to_string(dir.join("Notes").join(kept)).unwrap();
+        assert_eq!(back, "theirs", "back where it was, under its hidden name");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&bin);
     }
