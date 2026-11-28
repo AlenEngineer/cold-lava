@@ -2248,7 +2248,7 @@ mod tests {
         core.set_system_trash(Some(Bin::Freedesktop(bin.clone())));
         assert_eq!(core.kept_texts().kept, [], "none to begin with");
         let note = core.root().join("Notes/Lava.md");
-        let read = core.read_file("Notes/Lava.md").unwrap();
+        let seen = core.read_file("Notes/Lava.md").unwrap();
         let (theirs, third) = (note.clone(), note.clone());
         crate::write::lands::in_replace(
             0,

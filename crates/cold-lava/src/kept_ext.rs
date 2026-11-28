@@ -151,16 +151,13 @@ impl Extension for Kept {
         match news {
             ViewNews::Closed { view } if Some(view) == self.view => self.view = None,
             ViewNews::Event(Happened { view, event }) if Some(view) == self.view => match event {
-                view::Event::Activated { row } => {
-                    if self.find(&row).is_some() {
-                        host.open_note(row.into(), None, None);
-                    }
+                view::Event::Activated { row } if self.find(&row).is_some() => {
+                    host.open_note(row.into(), None, None);
                 }
-                view::Event::Command { command, row } if command == TRASH => {
-                    if let Some(row) = row {
-                        self.trash(&row, host);
-                    }
-                }
+                view::Event::Command {
+                    command,
+                    row: Some(row),
+                } if command == TRASH => self.trash(&row, host),
                 _ => {}
             },
             _ => {}
