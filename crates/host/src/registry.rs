@@ -20,11 +20,12 @@ pub const READER: &str = "reader";
 /// client, with no permission to check, since it is the user.
 pub const MENU: &str = "menu";
 /// The built-in extensions' names, in the frontends that have them: the agenda, the table,
-/// the graph and Neovim as the editor. An installed extension can't take one
+/// the graph, the kept texts and Neovim as the editor. An installed extension can't take one
 /// (`installed::load`).
 pub const AGENDA: &str = "agenda";
 pub const TABLE: &str = "table";
 pub const GRAPH: &str = "graph";
+pub const KEPT: &str = "kept";
 pub const NVIM: &str = "nvim";
 const SCREEN_PERMISSIONS: &[Permission] = &[Permission::ItemsRead, Permission::ItemsEdit];
 

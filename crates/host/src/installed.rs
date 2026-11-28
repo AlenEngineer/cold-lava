@@ -15,6 +15,7 @@ const RESERVED: &[&str] = &[
     super::NVIM,
     super::TABLE,
     super::AGENDA,
+    super::KEPT,
     super::READER,
     super::MENU,
 ];

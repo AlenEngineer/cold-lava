@@ -833,15 +833,23 @@ fn links_are_still_read_by_pattern_here() {
 }
 
 /// The extensions the app builds in, the ones `ext.rs`'s `Registry::load` names.
-const BUILT_IN: [&str; 4] = ["agenda.rs", "ext/nvim.rs", "graph_ext.rs", "type_table.rs"];
+const BUILT_IN: [&str; 5] = [
+    "agenda.rs",
+    "ext/nvim.rs",
+    "graph_ext.rs",
+    "kept_ext.rs",
+    "type_table.rs",
+];
 
 /// The door, as a built-in extension names it: `ext` is the host (`pub use
-/// cold_lava_host::*`) and `gateway` the messages; `items`, `types` and `links` are the
+/// cold_lava_host::*`), `gateway` the messages and `files` the file messages; `items`, `types` and `links` are the
 /// engine's types the gateway's answers hold (`Item`, a type's `Definition`, `LinkGraph`);
 /// `list` and `table` are where the terminal names the views' data, re-exported from
 /// `cold_lava_views`. Apart from `ext`, the door is their data, not their functions: a
 /// function of one of them (`items::extract`, a second reading of a note) is beyond it.
-const DOOR: [&str; 7] = ["ext", "gateway", "items", "links", "list", "table", "types"];
+const DOOR: [&str; 8] = [
+    "ext", "files", "gateway", "items", "links", "list", "table", "types",
+];
 
 /// One file's code, by its path under `src/`.
 fn file<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
@@ -900,6 +908,7 @@ fn beyond_the_gateway(path: &str, code: &str) -> Vec<String> {
 ///   groups and the terminal's scene, which bring ratatui with them; `commands`, the graph's
 ///   command table.
 /// - `ext/nvim.rs`: `core`, for `Jump`. Neovim runs in a terminal pane, so it stays here.
+/// - `kept_ext.rs`: `words`, for the app's one plural.
 ///
 /// It reads the names, not what is done with them: a module listed here can be used for
 /// more without this failing, and a path that names the crate root another way
@@ -928,6 +937,7 @@ fn the_built_in_extensions_use_this_beyond_the_gateway() {
         "graph_ext.rs: crate::graph",
         "graph_ext.rs: crate::groups",
         "graph_ext.rs: crate::scene_view",
+        "kept_ext.rs: crate::words",
     ];
     only_listed(
         "the built-in extensions beyond the gateway",

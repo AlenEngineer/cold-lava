@@ -248,6 +248,7 @@ const FILES: &[&str] = &[
     "workspace/delete",
     "workspace/restore",
     "workspace/create-folder",
+    "workspace/kept",
 ];
 
 /// What `serve` answers: now, or later under a ticket, which `Extension::edited` brings back
@@ -330,6 +331,7 @@ fn serve_now(
             files::Request::Delete { path, expect } => answer(host.delete_file(&path, &expect)),
             files::Request::Restore(restore) => answer(host.restore_file(&restore)),
             files::Request::CreateFolder { path } => answer(host.create_folder(&path)),
+            files::Request::Kept => answer(host.kept_texts()),
         };
     }
     if !HOST_METHODS.contains(&method) {

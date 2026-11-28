@@ -14,6 +14,7 @@ mod hints;
 mod history;
 mod home;
 mod image;
+mod kept_ext;
 mod kitty;
 mod line_input;
 mod list;

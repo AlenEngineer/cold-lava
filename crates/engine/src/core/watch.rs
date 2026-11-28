@@ -3,7 +3,7 @@
 //! each path by its names in the workspace (`named`) and what it is (`classify`), which
 //! leaves out what the scan doesn't read (`workspace::is_scanned`).
 
-use crate::workspace;
+use crate::{workspace, write};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -68,6 +68,9 @@ pub enum Kind {
     Board(String),
     File(String),
     GraphSettings,
+    /// A kept text's name (`write::kept_for`) in a folder the scan reads: one was kept, or put
+    /// away (`Core::kept_texts`).
+    Kept,
     /// Something without an extension: most likely a folder that was moved or deleted, which
     /// only a full rescan catches reliably.
     Folder,
@@ -81,6 +84,13 @@ pub fn classify(root: &Path, path: &Path) -> Kind {
     let rel_s = rel.to_string_lossy().replace('\\', "/");
     if rel_s == ".obsidian/graph.json" {
         return Kind::GraphSettings;
+    }
+    let kept = rel
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(write::kept_for);
+    if kept.is_some() && rel.parent().is_some_and(workspace::is_scanned) {
+        return Kind::Kept;
     }
     if !workspace::is_scanned(rel) {
         return Kind::Ignored;

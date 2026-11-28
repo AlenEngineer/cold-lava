@@ -20,14 +20,18 @@ use std::path::{Path, PathBuf};
 
 use name::{beside, reserved};
 
+pub(crate) use kept::kept_for;
+pub use kept::{Outside, find as find_kept};
+
 #[derive(Debug)]
 pub enum WriteError {
     /// The file's content isn't what the caller read earlier: someone else changed it.
     Changed(PathBuf),
     /// Another write landed at the path (the first) while this one was under way, and a text
     /// taken out of the file couldn't be put back: it is kept in the second path, a hidden
-    /// file beside it named `.Name.cold-lava-kept-…` (`kept::kept_name`). It is never the
-    /// caller's own old text or this write's. Read the file again: this write may or may not
+    /// file beside it named `.Name.cold-lava-kept-…` (`kept::kept_name`), which the core
+    /// lists (`find_kept`, `workspace/kept`). It is never the caller's own old text or this
+    /// write's. Read the file again: this write may or may not
     /// be in it. Not "read again" alone: a text now sits outside the file (gateway `kept`).
     Kept(PathBuf, PathBuf),
     /// Creating a file where something already is (`taken`).

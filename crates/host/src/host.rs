@@ -7,7 +7,8 @@ use crate::view::{Content, ViewId};
 use cold_lava_engine::act::{self, Ask, Reply};
 use cold_lava_engine::core::Core;
 use cold_lava_engine::files::{
-    self, Create, Created, Deleted, Folder, Listed, Restore, Restored, Stat, Text, Written,
+    self, Create, Created, Deleted, Folder, KeptTexts, Listed, Restore, Restored, Stat, Text,
+    Written,
 };
 use cold_lava_engine::gateway::{self, Answer, Edit, Found, Query, Reason, Select, SubId};
 use cold_lava_engine::owner::given::Given;
@@ -377,6 +378,12 @@ impl Host<'_> {
         let name = self.name;
         self.core(Permission::FilesDelete)?
             .restore_file(name, restore)
+    }
+
+    /// `workspace/kept`: the texts kept outside their files, of every kind, so it needs
+    /// `files.read`.
+    pub fn kept_texts(&mut self) -> Result<KeptTexts, gateway::Error> {
+        Ok(self.core(Permission::FilesRead)?.kept_texts())
     }
 
     /// `workspace/create-folder`: a folder has no kind, so it needs `files.write`.

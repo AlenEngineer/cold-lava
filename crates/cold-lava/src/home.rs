@@ -2040,7 +2040,8 @@ impl Home {
             | CoreEvent::OwnerTrouble { .. }
             | CoreEvent::OwnedLeavesOut { .. }
             | CoreEvent::GraphSettingsChanged
-            | CoreEvent::ItemEdited { .. } => false,
+            | CoreEvent::ItemEdited { .. }
+            | CoreEvent::KeptChanged => false,
             _ => true,
         });
         if tree_changed {
@@ -2077,7 +2078,8 @@ impl Home {
             | CoreEvent::ItemEdited { .. }
             | CoreEvent::Deleted { .. }
             | CoreEvent::Restored { .. }
-            | CoreEvent::FolderCreated { .. } => false,
+            | CoreEvent::FolderCreated { .. }
+            | CoreEvent::KeptChanged => false,
         });
         if reread {
             self.reload_reader();

@@ -49,6 +49,9 @@ pub enum Request {
     /// A new, empty folder at `path`, with any missing parents.
     #[serde(rename = "workspace/create-folder")]
     CreateFolder { path: String },
+    /// Every text kept outside the file it was taken from (`KeptTexts`).
+    #[serde(rename = "workspace/kept")]
+    Kept,
 }
 
 /// `workspace/restore`: put what `trashed` names back where it was, or at `to`. Never
@@ -157,6 +160,24 @@ pub struct Restored {
     pub path: String,
 }
 
+/// A text outside the file it was taken from (#427): another program's save that a save of
+/// `path` couldn't put back (`write::WriteError::Kept`), or what a killed save left under its
+/// staged name. It is in `kept`, a hidden file beside `path` that the tree and Obsidian pass
+/// by, and `rev` is its version: `workspace/read` and `workspace/stat` take `kept` as a path,
+/// and `workspace/delete` puts it away to the trash.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptText {
+    pub path: String,
+    pub kept: String,
+    pub rev: String,
+}
+
+/// The answer to `workspace/kept`: sorted by where each text is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptTexts {
+    pub kept: Vec<KeptText>,
+}
+
 /// The answer to `workspace/create-folder`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Folder {
@@ -175,16 +196,21 @@ pub fn extension_of(path: &str) -> Option<String> {
 /// `..`, `.` or hidden part (`.obsidian`, `.trash`, `.git`), and neither it nor a folder on the
 /// way to it is a symlink (`unlinked`).
 pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, Error> {
-    let path = normal(rel)?;
-    unlinked(root, &path, &path)?;
-    Ok(root.join(path))
+    at(root, &normal(rel)?)
+}
+
+/// The file at `rel`, already spelled as `normal` or `normal_or_kept` spells it, refused when
+/// it or a folder on the way to it is a symlink.
+fn at(root: &Path, rel: &str) -> Result<PathBuf, Error> {
+    unlinked(root, rel, rel)?;
+    Ok(root.join(rel))
 }
 
 /// The entry at `rel` itself, for `workspace/stat` and `workspace/delete`: as `resolve`, but
 /// the last part may be a symlink, and is then the entry, whatever it points to. No folder on
 /// the way to it may be one.
 pub(crate) fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
-    let path = normal(rel)?;
+    let path = normal_or_kept(root, rel)?;
     let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
     unlinked(root, &path, folder)?;
     Ok(root.join(path))
@@ -211,6 +237,63 @@ pub fn normal(rel: &str) -> Result<String, Error> {
         ));
     }
     Ok(parts.join("/"))
+}
+
+/// `rel` as `normal` spells it, or the path of a kept text (`KeptText::kept`): a hidden name
+/// that `write::find_kept` finds in its folder, at the end of a path `normal` reads. What
+/// `workspace/read`, `workspace/stat` and `workspace/delete` take, so a client can read a kept
+/// text and put it away; nothing writes, makes or moves one there.
+pub fn normal_or_kept(root: &Path, rel: &str) -> Result<String, Error> {
+    let refused = match normal(rel) {
+        Ok(rel) => return Ok(rel),
+        Err(refused) => refused,
+    };
+    let (folder, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+    if rel.starts_with('/') || name.contains('\0') {
+        return Err(refused);
+    }
+    let folder = match folder {
+        "" => String::new(),
+        folder => normal(folder).map_err(|_| refused.clone())?,
+    };
+    if !folder.is_empty() {
+        unlinked(root, &folder, &folder)?;
+    }
+    let kept = write::find_kept(&root.join(&folder));
+    let named = |o: &write::Outside| o.kept.file_name() == Some(std::ffi::OsStr::new(name));
+    if !kept.iter().any(named) {
+        return Err(refused);
+    }
+    Ok(match folder.as_str() {
+        "" => name.to_string(),
+        folder => format!("{folder}/{name}"),
+    })
+}
+
+/// `workspace/kept`: in each folder the scan reads (`workspace::is_skipped`, no symlink
+/// followed), what `write::find_kept` finds, named from `root`. A text whose version can't be
+/// read (gone since it was found) is left out.
+pub fn kept(root: &Path) -> KeptTexts {
+    let folders = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
+        e.depth() == 0
+            || (e.file_type().is_dir() && !workspace::is_skipped(&e.file_name().to_string_lossy()))
+    });
+    let mut kept = Vec::new();
+    for folder in folders.flatten() {
+        for found in write::find_kept(folder.path()) {
+            let named = |p: &Path| rel_path::or_whole(root, p);
+            let (path, at) = (named(&found.file), named(&found.kept));
+            if let Some(rev) = crate::read::rev_at(root, &at) {
+                kept.push(KeptText {
+                    path,
+                    kept: at,
+                    rev,
+                });
+            }
+        }
+    }
+    kept.sort_by(|a, b| a.kept.cmp(&b.kept));
+    KeptTexts { kept }
 }
 
 /// Refused when `parts` under `root`, or a folder on the way to it, is a symlink: the gateway
@@ -283,8 +366,8 @@ fn written<'a>(root: &'a Path, rel: &'a str) -> impl Fn(WriteError) -> Error + '
 
 /// `workspace/read`
 pub fn read(root: &Path, rel: &str) -> Result<Text, Error> {
-    let rel = &normal(rel)?;
-    let seen = Seen::file(&resolve(root, rel)?).map_err(io(rel))?;
+    let rel = &normal_or_kept(root, rel)?;
+    let seen = Seen::file(&at(root, rel)?).map_err(io(rel))?;
     let text = seen
         .text()
         .map_err(|not| Error::new(Reason::Refused, not.about(rel)))?;
@@ -374,7 +457,7 @@ fn moved<'a>(root: &'a Path, rel: &'a str) -> impl Fn(WriteError) -> Error + 'a 
 
 /// `workspace/stat`
 pub fn stat(root: &Path, rel: &str) -> Result<Stat, Error> {
-    let rel = &normal(rel)?;
+    let rel = &normal_or_kept(root, rel)?;
     let read = contents(root, rel)?;
     let mut stat = Stat {
         rev: read.rev(),
@@ -409,7 +492,7 @@ pub fn delete(
     expect: &str,
     system: Option<&Bin>,
 ) -> Result<Trashed, Error> {
-    let rel = &normal(rel)?;
+    let rel = &normal_or_kept(root, rel)?;
     let now = contents(root, rel)?;
     if now.rev() != expect {
         let message = format!("{rel} changed since it was read: read it again");
@@ -615,6 +698,57 @@ mod tests {
         std::fs::write(dir.join("Plan.md"), "[[Data/Eruptions.csv]]\n").unwrap();
         std::fs::write(dir.join("Data/Eruptions.csv"), "name,year\nKrakatoa,1883\n").unwrap();
         dir
+    }
+
+    /// `workspace/kept` and its answer on the wire; a kept text's hidden name is read where
+    /// the finder finds it, and no other hidden name is, nor one in a hidden folder, nor a
+    /// kept name spelled another way; nothing writes one.
+    #[test]
+    fn kept_texts_are_json_and_only_their_hidden_names_are_read() {
+        wire(Request::Kept, json!({"method": "workspace/kept"}));
+        let one = KeptText {
+            path: "Plan.md".into(),
+            kept: ".Plan.cold-lava-kept-5-0.md".into(),
+            rev: "00ff".into(),
+        };
+        wire(
+            KeptTexts { kept: vec![one] },
+            json!({"kept": [{"path": "Plan.md", "kept": ".Plan.cold-lava-kept-5-0.md",
+                             "rev": "00ff"}]}),
+        );
+        let dir = workspace("kept-names");
+        let kept = "Data/.Eruptions.cold-lava-kept-5-0.csv";
+        std::fs::write(dir.join(kept), "kept").unwrap();
+        std::fs::write(dir.join("Data/.hidden.csv"), "secret").unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".git/.x.cold-lava-kept-5-0.md"), "hidden folder").unwrap();
+        let root = dir.canonicalize().unwrap();
+        let text = read(&root, kept).unwrap();
+        assert_eq!(text.text, "kept");
+        assert_eq!(stat(&root, kept).unwrap().rev, text.rev);
+        for refused in [
+            "Data/.hidden.csv",
+            ".git/.x.cold-lava-kept-5-0.md",
+            "/Data/.Eruptions.cold-lava-kept-5-0.csv",
+            "Data/../Data/.Eruptions.cold-lava-kept-5-0.csv",
+            "Data/.Eruptions.cold-lava-kept-6-0.csv",
+        ] {
+            let e = read(&root, refused).unwrap_err();
+            assert_eq!(e.reason, Reason::Refused, "{refused}: {e}");
+        }
+        let e = replace(&root, kept, "x", &text.rev).unwrap_err();
+        assert_eq!(e.reason, Reason::Refused, "{e}");
+        let listed = kept_texts(&root);
+        assert_eq!(
+            listed,
+            [("Data/Eruptions.csv".into(), kept.into(), text.rev)]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn kept_texts(root: &Path) -> Vec<(String, String, String)> {
+        let all = super::kept(root).kept.into_iter();
+        all.map(|k| (k.path, k.kept, k.rev)).collect()
     }
 
     #[test]

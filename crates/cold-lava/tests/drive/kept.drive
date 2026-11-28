@@ -8,16 +8,16 @@ env COLD_LAVA_EDITOR=none
 wait-for 1 kept text
 keys :
 type kept texts
-wait-for kept texts
+wait-for what saves couldn't put back
 keys enter
-wait-for Kept texts
+wait-for Beside the note each is for
 expect Inbox/Field Season.md
 expect .Field Season.cold-lava-kept-
 screen
 keys enter
 wait-for The text another program saved meanwhile.
 keys ctrl+o
-wait-for Kept texts
+wait-for Beside the note each is for
 keys d
 wait-for no kept texts
 keys esc

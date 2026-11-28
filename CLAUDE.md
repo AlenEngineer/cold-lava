@@ -164,8 +164,9 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   came out, putting another write's text back and refusing (`Changed`). The swap back checks
   what comes out too: a newer text that landed in between is swapped in again, so the newest
   stays at the path and the older is kept beside the file as
-  `.Name.cold-lava-kept-SECONDS-N.ext` and named (`Kept`, the gateway's `kept`; where the
-  user sees kept texts is #427). After 16 rounds (`ROUNDS`, a writer that doesn't stop) or a
+  `.Name.cold-lava-kept-SECONDS-N.ext` and named (`Kept`, the gateway's `kept`).
+  `find_kept` is the one finder of kept texts and of killed saves' leftovers, and the core
+  lists them (`Core::kept_texts`, `workspace/kept`, `Event::KeptChanged`, #427). After 16 rounds (`ROUNDS`, a writer that doesn't stop) or a
   swap that fails, the path may hold an older text: the newer one is then kept beside it and
   named, never removed. Where the file system can't swap, the file is moved aside
   by one rename onto a name it reserved and compared there. A text the engine took out is
@@ -190,8 +191,9 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   system with neither rename flags nor hard links, `no_replace`'s check-then-rename
   (`os_rename::by_link`), which `create`, `move_file` and `replace`'s aside all go through.
   A save killed halfway leaves its staged `.Name.cold-lava-PID-N.tmp`: the first write a
-  process stages in a folder clears those of dead PIDs (`write/stale.rs`: removed when a copy
-  of the file or empty, kept under a kept name otherwise; a kept text never). It holds the
+  process stages in a folder clears those of dead PIDs (`write/stale.rs`: put back at its file's
+  path when nothing is there, removed when a copy of the file or empty, kept under a kept
+  name otherwise; a kept text never). It holds the
   folder's turn while it does (`lock.rs`), so a live `replace` it can't see by PID (another
   container's, another machine's) keeps its staged file; where the turn can't be had (NFS, a
   wait run out) it clears nothing there. A staged file changed or renamed within a minute
@@ -502,6 +504,9 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   `workspace/delete` (to the trash, refused unless still that `rev`; answers a random token that
   only the client it was given to can use, kept in the core's `Trash` and gone with the core),
   `workspace/restore` (never over something; `to` is a new name) and `workspace/create-folder`.
+  `workspace/kept` lists the texts kept outside their files (docs/extensions.md, "Kept texts,
+  as built"); `read`, `stat` and `delete` take such a hidden path (`normal_or_kept`), nothing
+  else does.
   `new_path` is the one check of where a new file or folder goes (`normal`, then
   `rename::check_path`, then `resolve`: inside the workspace, no symlink on the way), and a
   `NewPath` only it makes: `create-folder`, the menu's new note, the switcher's, a link
@@ -638,6 +643,8 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   extensions. `home.rs` applies the `Effect`s.
 - `ext/nvim.rs`: Neovim as the editor extension: `VIM_SCRIPT`, what each OSC message means, the
   commands it types into its pane.
+- `kept_ext.rs`: the kept texts as a built-in extension (`kept`): their count on the status
+  line while there are any, and `kept.open` to list, open and put them away.
 - `views.rs` keeps the views extensions opened: drawn with `ListView`/`TableView`, updated
   once a frame, places in history while open.
 

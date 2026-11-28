@@ -40,7 +40,7 @@ pub use manifest::{CommandSpec, FileType, Manifest, Permission, Role, Shows, Spe
 pub use protocol::{
     CommandRequest, EditorRequest, Effect, FileNews, FilePreview, PaneId, PaneNews, PaneSpec,
 };
-pub use registry::{AGENDA, GRAPH, MENU, NVIM, READER, Registry, TABLE};
+pub use registry::{AGENDA, GRAPH, KEPT, MENU, NVIM, READER, Registry, TABLE};
 
 use cold_lava_engine::{act, files, gateway, links, matcher, owner, paths, recipe, style, types};
 #[cfg(test)]

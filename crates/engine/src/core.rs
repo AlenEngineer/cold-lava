@@ -70,6 +70,9 @@ pub enum Event {
         by: String,
         what: String,
     },
+    /// The texts kept outside their files changed: one was kept, put away or put back
+    /// (`Core::kept_texts`, `workspace/kept`). A frontend shows them until they are dealt with.
+    KeptChanged,
     /// The client named `by` moved a file or a folder to the trash through the gateway
     /// (`workspace/delete`), after the events of what went. Workspace-relative, with its
     /// extension.
@@ -137,6 +140,10 @@ pub struct Core {
     trashed: files::Trash,
     /// The system trash deletes go to, when the workspace's `trashOption` names it.
     system_trash: Option<Bin>,
+    /// The texts kept outside their files (`files::kept`), listed again when the watcher hears
+    /// a kept name (`kept_heard`), on a rescan and after the core's own delete or restore.
+    kept: files::KeptTexts,
+    kept_heard: bool,
 }
 
 impl Core {
@@ -145,6 +152,7 @@ impl Core {
         let watch = Watch::start(&index.workspace.root);
         let owned = index.workspace.owned.iter();
         let unseen = owned.filter_map(|f| owned_news(None, Some(f))).collect();
+        let kept = files::kept(&index.workspace.root);
         Ok(Core {
             index,
             watch,
@@ -164,6 +172,22 @@ impl Core {
             trashed: files::Trash::default(),
             // This crate's tests get none unless they set one, so none reaches the real trash.
             system_trash: if cfg!(test) { None } else { system_bin() },
+            kept,
+            kept_heard: false,
+        })
+    }
+
+    /// `workspace/kept`: every text kept outside the file it was taken from, as last listed.
+    pub fn kept_texts(&self) -> files::KeptTexts {
+        self.kept.clone()
+    }
+
+    /// List the kept texts again: `KeptChanged` when they changed.
+    fn kept_again(&mut self) -> Option<Event> {
+        let now = files::kept(self.root());
+        (now != self.kept).then(|| {
+            self.kept = now;
+            Event::KeptChanged
         })
     }
 
@@ -677,7 +701,7 @@ impl Core {
         rel: &str,
         expect: &str,
     ) -> Result<files::Deleted, gateway::Error> {
-        let rel = &files::normal(rel)?;
+        let rel = &files::normal_or_kept(self.root(), rel)?;
         let trashed = files::delete(self.root(), rel, expect, self.system_trash.as_ref())?;
         let mut events = self.moved(&trashed.from, trashed.at.is_dir());
         events.push(Event::Deleted {
@@ -774,10 +798,12 @@ impl Core {
                 Ok(scanned) => {
                     let mut events = self.rescanned(scanned);
                     events.push(Event::Rescanned);
+                    events.extend(self.kept_again());
                     events
                 }
                 Err(_) => Vec::new(),
             },
+            Kind::Kept => self.kept_again().into_iter().collect(),
             Kind::GraphSettings | Kind::Ignored => Vec::new(),
         }
     }
@@ -904,6 +930,10 @@ impl Core {
         if std::mem::take(&mut self.graph_settings) {
             events.push(Event::GraphSettingsChanged);
         }
+        let rescanned = events.contains(&Event::Rescanned);
+        if std::mem::take(&mut self.kept_heard) || rescanned {
+            events.extend(self.kept_again());
+        }
         self.broadcast(&events);
         unseen.into_iter().chain(events).collect()
     }
@@ -926,6 +956,7 @@ impl Core {
                     }
                 }
                 Kind::GraphSettings => self.graph_settings = true,
+                Kind::Kept => self.kept_heard = true,
                 Kind::Folder => self.rescan = true,
                 Kind::Ignored => {}
             }
