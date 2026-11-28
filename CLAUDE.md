@@ -510,7 +510,7 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   `files::new_note`), write only at one (#411, #421, #422). `files::new_file` names a new
   `name.extension` (`resolver::new_file_path`), checking each candidate before it asks
   whether one is there, and refuses Obsidian's `newFileFolderPath` naming it.
-  `write::create` and `create_if_missing` themselves still take any path. `stat` and `delete` take a symlink as the entry itself, and the link is what goes; no
+  `write::create` and `create_if_missing` themselves still take any path, until #448. `stat` and `delete` take a symlink as the entry itself, and the link is what goes; no
   folder on the way to it may be one (`resolve_entry`). A
   frontend that drops a core carries its own deletes to the next one with `Core::take_trashed` /
   `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or
