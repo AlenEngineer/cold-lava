@@ -21,9 +21,13 @@ keys enter
 wait-for The text another program saved meanwhile.
 keys e
 wait-for a kept text is only read
+wait-gone 10s a kept text is only read
 type #
+wait-for a kept text is only read
 expect-not tag the note
+wait-gone 10s a kept text is only read
 type D
+wait-for a kept text is only read
 expect-not duplicated
 expect The text another program saved meanwhile.
 keys ctrl+o
