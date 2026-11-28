@@ -7,6 +7,7 @@
 //! `[[Source#Heading|text]]` becomes `[[Target#Heading|text]]` in its own style, and links in the
 //! source's text that were relative to its folder are fixed for the target's.
 
+use crate::files::TrashId;
 use crate::frontmatter::{self, TagEdit, Value};
 use crate::index::Index;
 use crate::read::Seen;
@@ -14,7 +15,7 @@ use crate::rel_path;
 use crate::rename::{self, FileEdit, Written};
 use crate::resolver::{Files, Rewriter};
 use crate::style::Style;
-use crate::trash::{self, Bin, Trashed};
+use crate::trash;
 use crate::write;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -85,8 +86,16 @@ pub struct Merged {
     /// Where the source was, for the menu to show and open; `undo` never acts on it.
     pub source_path: PathBuf,
     pub target_path: PathBuf,
-    pub trashed: Trashed,
+    /// The token the core's delete kept for whoever merged (`Core::undo_merge`).
+    trashed: TrashId,
     written: Written,
+}
+
+impl Merged {
+    /// The workspace it was made in.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
 }
 
 /// Work out merging note `source` into note `target`. Nothing is written.
@@ -318,10 +327,12 @@ fn add_lines(text: &str, key: &str, lines: &str, style: &Style) -> String {
 
 /// Carry out a merge: refuse if any file changed since it was planned, or a file another owner
 /// reads has no new text from it yet (`Core::relink`), write the target and every file whose links
-/// change (putting back the ones written if one fails), then send the source to the trash.
-/// `system` is the system trash: the core's (`Core::set_system_trash`), which `Core::apply`
-/// passes; tests pass their own.
-pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
+/// change (putting back the ones written if one fails), then send the source to the trash with
+/// `trash`: the core's delete (`Core::apply`), which gives back the token that restores it.
+pub(crate) fn apply(
+    m: &Merge,
+    trash: impl FnOnce(&Seen) -> Result<TrashId, write::WriteError>,
+) -> Result<Merged> {
     rename::check_answered(&m.edits)?;
     let source = Seen::kept(&m.source_path, m.source_text.as_bytes());
     match source.unchanged() {
@@ -336,7 +347,7 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
     }
     rename::check_unchanged(m.writes(), "merge")?;
     let written = Written::all(&m.root, m.writes())?;
-    match trash::delete(&m.root, &source, system) {
+    match trash(&source) {
         Ok(trashed) => Ok(Merged {
             root: m.root.clone(),
             source: m.source.clone(),
@@ -366,10 +377,11 @@ pub(crate) fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
     }
 }
 
-/// Undo a merge: the source comes back from the trash and every file written goes back to what it
-/// held. Refused, with nothing changed, if one of them was edited since, the source's path is
-/// taken, or a folder on the way to it is now a symlink (`files::resolve`, #397).
-pub fn undo(m: &Merged) -> Result<()> {
+/// Undo a merge: the source comes back from the trash with `restore` (the core's, by the token
+/// its delete kept: `Core::undo_merge`) and every file written goes back to what it held.
+/// Refused, with nothing changed, if one of them was edited since, the source's path is taken,
+/// or a folder on the way to it is now a symlink (`files::resolve`, #397).
+pub(crate) fn undo(m: &Merged, restore: impl FnOnce(&TrashId) -> Result<()>) -> Result<()> {
     m.written.check("merge")?;
     let path = crate::files::resolve(&m.root, &m.source);
     let there = path
@@ -381,11 +393,10 @@ pub fn undo(m: &Merged) -> Result<()> {
             there.display()
         );
     }
-    let path = match path {
-        Ok(path) => path,
-        Err(e) => bail!("{e}; the merge can't be undone"),
-    };
-    trash::restore(&m.trashed, &path)?;
+    if let Err(e) = path {
+        bail!("{e}; the merge can't be undone");
+    }
+    restore(&m.trashed)?;
     m.written.put_back().context("putting the files back")?;
     Ok(())
 }
@@ -393,7 +404,33 @@ pub fn undo(m: &Merged) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::files::Trash;
+    use crate::trash::Bin;
     use crate::workspace;
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// What the core keeps of each delete, by token, played here for the tests that make
+        /// and undo a merge without one.
+        static TRASHED: RefCell<Trash> = RefCell::default();
+    }
+
+    /// `super::apply` with the core's delete played: to `system`, or the workspace's `.trash`.
+    fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
+        super::apply(m, |seen| {
+            let trashed = trash::delete(&m.root, seen, system)?;
+            Ok(TRASHED.with(|t| t.borrow_mut().keep("test", trashed)))
+        })
+    }
+
+    /// `super::undo` with the core's restore played, back where the source was.
+    fn undo(m: &Merged) -> Result<()> {
+        super::undo(m, |id| {
+            let trashed = TRASHED.with(|t| t.borrow().get("test", id).cloned());
+            trash::restore(&trashed.context("no such token")?, &m.source_path)?;
+            Ok(())
+        })
+    }
 
     fn workspace_with(name: &str, files: &[(&str, &str)]) -> (PathBuf, Index) {
         let dir =
@@ -475,7 +512,7 @@ mod tests {
             "a new key goes where the workspace's notes write it"
         );
         assert!(!dir.join("workspace/Pāhoehoe.md").exists());
-        assert_eq!(done.trashed.at, dir.join("system-trash/Pāhoehoe.md"));
+        assert!(dir.join("system-trash/Pāhoehoe.md").exists(), "{done:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -524,7 +561,7 @@ mod tests {
         assert_eq!(m.own_links, 1, "./Sib, relative to the source's folder");
         assert!(apply(&m, None).is_err(), "not before the canvas's owner");
         let mut core = crate::core::Core::open(&ix.workspace.root, Default::default()).unwrap();
-        let made = core.apply(&mut m);
+        let made = core.apply("test", &mut m);
         let at_once = matches!(&made, crate::core::Applying::Now(Ok(_)));
         assert!(at_once, "it answers at once: {made:?}");
         assert_eq!(

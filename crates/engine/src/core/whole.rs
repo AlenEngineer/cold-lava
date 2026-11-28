@@ -8,19 +8,27 @@
 //! plan the same way. What the owners answered comes from the edit desk, never from the caller,
 //! which keeps only the plan, to show it, and the ticket.
 //!
+//! Each is made on behalf of a client (`by`), as a delete is: a merge's source goes to the
+//! trash through the core's own delete (`Core::delete_file`'s), so it is read again at once,
+//! `Event::Deleted` names who merged, and its undo puts it back by the token kept for them
+//! (`Core::undo_merge`, through `Core::restore_file`).
+//!
 //! Reading the workspace again afterwards is still the caller's, because the callers read it
 //! again three ways: the menu rescans, the command line only saves what the owners read
 //! (`poll`), and `Core::run_recipe` reads the files it wrote. One way for all would change
 //! what subscribers hear (#270, B5).
 
 use super::Core;
+use crate::files::{Restore, TrashId};
 use crate::gateway::Ticket;
 use crate::merge::{self, Merge, Merged};
 use crate::owner::edits::{Answers, Relinked};
-use crate::read;
+use crate::read::{self, Seen};
 use crate::recipe::{self, Applied};
 use crate::rename::{self, FileEdit};
-use crate::trash::Bin;
+use crate::trash;
+use crate::write::WriteError;
+use anyhow::bail;
 use std::path::{Path, PathBuf};
 
 /// A plan the core makes (`Core::apply`): a rename, a merge or a recipe, and nothing else. The
@@ -58,13 +66,27 @@ mod sealed {
 use sealed::Sealed;
 
 /// What writing a plan takes from the core: the workspace's root, which a rename checks and
-/// makes its moves under (no plan carries one, so no frontend names it), and the system trash a
-/// merge's source goes to. Nothing outside this module can make one, so only the core calls
-/// `Planned::write`. The seal (`Sealed`), not this, is what keeps a frontend's type from being a
-/// plan.
+/// makes its moves under (no plan carries one, so no frontend names it), and the core's delete,
+/// on behalf of the client `by`, which a merge's source goes through. Nothing outside this
+/// module can make one, so only the core calls `Planned::write`. The seal (`Sealed`), not this,
+/// is what keeps a frontend's type from being a plan.
 pub struct Door<'a> {
-    root: &'a Path,
-    system: Option<&'a Bin>,
+    core: &'a mut Core,
+    by: &'a str,
+}
+
+impl Door<'_> {
+    fn root(&self) -> &Path {
+        self.core.root()
+    }
+
+    /// The core's delete of what was `seen` at `rel`, as `by`: to the trash the workspace's
+    /// `trashOption` names, refused if it changed since; its token, for `Core::undo_merge`.
+    fn trash(&mut self, rel: &str, seen: &Seen) -> Result<TrashId, WriteError> {
+        let system = self.core.system_trash.as_ref();
+        let trashed = trash::delete(self.core.root(), seen, system)?;
+        Ok(self.core.keep_deleted(self.by, rel, trashed))
+    }
 }
 
 impl Sealed for rename::Plan {
@@ -85,7 +107,7 @@ impl Planned for rename::Plan {
     type Made = ();
 
     fn write(&self, door: Door<'_>) -> anyhow::Result<()> {
-        rename::apply(self, door.root)
+        rename::apply(self, door.root())
     }
 }
 
@@ -102,8 +124,8 @@ impl Sealed for Merge {
 impl Planned for Merge {
     type Made = Merged;
 
-    fn write(&self, door: Door<'_>) -> anyhow::Result<Merged> {
-        merge::apply(self, door.system)
+    fn write(&self, mut door: Door<'_>) -> anyhow::Result<Merged> {
+        merge::apply(self, |seen| door.trash(&self.source, seen))
     }
 }
 
@@ -121,7 +143,7 @@ impl Planned for recipe::Plan {
     type Made = Applied;
 
     fn write(&self, door: Door<'_>) -> anyhow::Result<Applied> {
-        recipe::apply(self, door.root)
+        recipe::apply(self, door.root())
     }
 }
 
@@ -147,15 +169,16 @@ pub enum NotApplied {
 }
 
 impl Core {
-    /// Make `plan`, confirmed: the owners of its files that other owners read are asked for
-    /// their new texts, then it is written, then what they read in those texts is kept. Nothing
-    /// is written until every owner has answered: when an extension has to, it waits under a
-    /// ticket (`Applying::Later`). The engine's own owners answer inside the call.
-    pub fn apply<P: Planned>(&mut self, plan: &mut P) -> Applying<P::Made> {
+    /// Make `plan`, confirmed, on behalf of the client `by`: the owners of its files that other
+    /// owners read are asked for their new texts, then it is written, then what they read in
+    /// those texts is kept. Nothing is written until every owner has answered: when an
+    /// extension has to, it waits under a ticket (`Applying::Later`). The engine's own owners
+    /// answer inside the call.
+    pub fn apply<P: Planned>(&mut self, by: &str, plan: &mut P) -> Applying<P::Made> {
         match self.relink(plan.edits_mut()) {
             Err(why) => Applying::Now(Err(NotApplied::Refused(why))),
             Ok(Answers::Later(ticket)) => Applying::Later(ticket),
-            Ok(Answers::Now(answers)) => Applying::Now(self.write_planned(plan, &answers)),
+            Ok(Answers::Now(answers)) => Applying::Now(self.write_planned(by, plan, &answers)),
         }
     }
 
@@ -163,15 +186,36 @@ impl Core {
     /// says they answered: with the new texts they gave, which the core takes from the edit
     /// desk. Refused when an owner refused, their answer isn't in (still to come, cancelled,
     /// or dropped by a later `take_relinked`), or a file of `plan` other owners read has none
-    /// (one added after they were asked), and then nothing is written.
+    /// (one added after they were asked), and then nothing is written. On behalf of `by`, as
+    /// `apply`.
     pub fn apply_answered<P: Planned>(
         &mut self,
+        by: &str,
         plan: &mut P,
         ticket: Ticket,
     ) -> Result<P::Made, NotApplied> {
         let answers = self.edits.answered_into(ticket, plan.edits_mut());
         let answers = answers.map_err(NotApplied::Refused)?;
-        self.write_planned(plan, &answers)
+        self.write_planned(by, plan, &answers)
+    }
+
+    /// Undo the merge `m` on behalf of `by`, who made it: its source comes back through
+    /// `restore_file` by the token its delete kept, then every file it wrote goes back to what
+    /// it held (`merge::undo`). Refused, with nothing changed, when it was made in another
+    /// workspace, or as `merge::undo` and `restore_file` refuse.
+    pub fn undo_merge(&mut self, by: &str, m: &Merged) -> anyhow::Result<()> {
+        if m.root() != self.root() {
+            let name = m.root().file_name().unwrap_or_default().to_string_lossy();
+            bail!("the merge was made in {name}: open it to undo");
+        }
+        merge::undo(m, |trashed| {
+            let restore = Restore {
+                trashed: trashed.clone(),
+                to: None,
+            };
+            self.restore_file(by, &restore)?;
+            Ok(())
+        })
     }
 
     /// Renames, merges and recipes whose owners have all answered (`apply`), or one refused,
@@ -191,12 +235,13 @@ impl Core {
     /// in them.
     fn write_planned<P: Planned>(
         &mut self,
+        by: &str,
         plan: &P,
         answers: &[Relinked],
     ) -> Result<P::Made, NotApplied> {
         let door = Door {
-            root: self.root(),
-            system: self.system_trash.as_ref(),
+            core: &mut *self,
+            by,
         };
         let made = plan.write(door).map_err(NotApplied::Failed)?;
         self.relinked(plan.edits(), answers, |path| plan.moved(path));

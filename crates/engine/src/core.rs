@@ -15,7 +15,7 @@ use crate::owner::edits::{Edits, FileEdit, ItemEdit, ToWrite};
 use crate::owner::given::{self, Change, Given};
 use crate::owner::markdown::{self, After};
 use crate::read;
-use crate::trash::{Bin, system_bin};
+use crate::trash::{Bin, Trashed, system_bin};
 use crate::workspace::{self, NoteChange, Owned, Workspace};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -76,13 +76,14 @@ pub enum Event {
     /// (`Core::kept_texts`, `workspace/kept`). A frontend shows them until they are dealt with.
     KeptChanged,
     /// The client named `by` moved a file or a folder to the trash through the gateway
-    /// (`workspace/delete`), after the events of what went. Workspace-relative, with its
-    /// extension.
+    /// (`workspace/delete`), or a note by merging it into another (`Core::apply`), after the
+    /// events of what went. Workspace-relative, with its extension.
     Deleted {
         path: String,
         by: String,
     },
-    /// `by` put it back (`workspace/restore`), after the events of what came back.
+    /// `by` put it back (`workspace/restore`, or a merge's undo: `Core::undo_merge`), after
+    /// the events of what came back.
     Restored {
         path: String,
         by: String,
@@ -746,15 +747,22 @@ impl Core {
     ) -> Result<files::Deleted, gateway::Error> {
         let rel = &files::normal_or_kept(self.root(), rel)?;
         let trashed = files::delete(self.root(), rel, expect, self.system_trash.as_ref())?;
+        let went = trashed.went;
+        let trashed = self.keep_deleted(by, rel, trashed);
+        Ok(files::Deleted { trashed, went })
+    }
+
+    /// What `by` just put in the trash from `rel` (`delete_file`, a merge's source): read again
+    /// at once, its events ending with `Deleted` for the next `poll`, and kept under the token
+    /// `restore_file` takes.
+    fn keep_deleted(&mut self, by: &str, rel: &str, trashed: Trashed) -> files::TrashId {
         let mut events = self.moved(&trashed.from, trashed.at.is_dir());
         events.push(Event::Deleted {
             path: rel.to_string(),
             by: by.to_string(),
         });
         self.announce(events);
-        let went = trashed.went;
-        let trashed = self.trashed.keep(by, trashed);
-        Ok(files::Deleted { trashed, went })
+        self.trashed.keep(by, trashed)
     }
 
     /// `workspace/restore` on behalf of `by`: what a `workspace/delete` of this core answered
@@ -850,12 +858,13 @@ impl Core {
         }
     }
 
-    /// A recipe planned and made at once (`apply`), the files it wrote read again (their events
-    /// come from the next `poll`); its title. The files other owners read get their new texts
-    /// from their owners first. Refused when one of them has to wait for its owner, an
-    /// extension: such a recipe runs from its own screen.
+    /// A recipe planned and made at once on behalf of `by` (`apply`), the files it wrote read
+    /// again (their events come from the next `poll`); its title. The files other owners read
+    /// get their new texts from their owners first. Refused when one of them has to wait for
+    /// its owner, an extension: such a recipe runs from its own screen.
     pub fn run_recipe(
         &mut self,
+        by: &str,
         id: &str,
         options: crate::recipe::Options,
     ) -> Result<String, gateway::Error> {
@@ -863,7 +872,7 @@ impl Core {
         let refused = |m: String| gateway::Error::new(Reason::Refused, m);
         let r = recipe::find(id).ok_or_else(|| refused(format!("no recipe called {id}")))?;
         let mut plan = recipe::plan(&self.index, r, options).map_err(|e| refused(e.to_string()))?;
-        let made = match self.apply(&mut plan) {
+        let made = match self.apply(by, &mut plan) {
             Applying::Now(made) => made,
             Applying::Later(ticket) => {
                 let waits = (plan.edits.iter()).find(|e| self.edits.waiting(&e.file).is_some());
@@ -1819,7 +1828,7 @@ mod tests {
             rename::apply(&p, core.root()).is_err(),
             "not before the owner answered"
         );
-        let Applying::Later(ticket) = core.apply(&mut p) else {
+        let Applying::Later(ticket) = core.apply("test", &mut p) else {
             panic!("waits for the owner");
         };
         assert!(
@@ -1841,7 +1850,7 @@ mod tests {
         assert!(dir.join("Krakatoa.md").is_file(), "nothing moved yet");
         assert_eq!(csv_now(), csv("Krakatoa", "Tambora"), "nothing written yet");
         assert_eq!(core.take_relinked(), [ticket]);
-        core.apply_answered(&mut p, ticket).unwrap();
+        core.apply_answered("test", &mut p, ticket).unwrap();
         core.rescan_now();
         assert_eq!(csv_now(), csv("Krakatau", "Tambora"));
         assert!(core.take_reads().is_empty(), "what it read back is kept");
@@ -1855,7 +1864,7 @@ mod tests {
         // A link the owner reported, and an owner that doesn't write what was asked, or
         // refuses: the rename is cancelled and nothing changes.
         let mut p = plan(&core, "Tambora", "Tambora volcano");
-        let Applying::Later(ticket) = core.apply(&mut p) else {
+        let Applying::Later(ticket) = core.apply("test", &mut p) else {
             panic!("waits for the owner");
         };
         let ask = answer(
@@ -1866,17 +1875,17 @@ mod tests {
         assert!(matches!(&ask.changes[..], [Change::Link { link, to, .. }]
             if link == "Tambora" && to == "Tambora volcano"));
         assert_eq!(core.take_relinked(), [ticket]);
-        let made = core.apply_answered(&mut p, ticket);
+        let made = core.apply_answered("test", &mut p, ticket);
         assert!(
             matches!(&made, Err(NotApplied::Refused(m)) if m.contains("links to x")),
             "{made:?}"
         );
-        let Applying::Later(ticket) = core.apply(&mut p) else {
+        let Applying::Later(ticket) = core.apply("test", &mut p) else {
             panic!("waits for the owner");
         };
         answer(&mut core, Err("it is read-only"), None);
         assert_eq!(core.take_relinked(), [ticket]);
-        let made = core.apply_answered(&mut p, ticket);
+        let made = core.apply_answered("test", &mut p, ticket);
         assert!(
             matches!(&made, Err(NotApplied::Refused(m))
                 if m == "csv-table didn't edit Eruptions.csv: it is read-only"),
@@ -1884,7 +1893,7 @@ mod tests {
         );
 
         // Cancelled while it waits: a late answer is dropped.
-        let Applying::Later(ticket) = core.apply(&mut p) else {
+        let Applying::Later(ticket) = core.apply("test", &mut p) else {
             panic!("waits for the owner");
         };
         core.cancel_relink(ticket);
@@ -1933,7 +1942,7 @@ mod tests {
             recipe::apply(&p, core.root()).is_err(),
             "not before the owner answered"
         );
-        let Applying::Later(ticket) = core.apply(&mut p) else {
+        let Applying::Later(ticket) = core.apply("test", &mut p) else {
             panic!("waits for the owner");
         };
         let (_, ask) = core.take_file_edits().pop().unwrap();
@@ -1952,7 +1961,7 @@ mod tests {
             std::fs::read_to_string(dir.join("Note.md")).unwrap(),
             "#lava\n"
         );
-        let done = core.apply_answered(&mut p, ticket).unwrap();
+        let done = core.apply_answered("test", &mut p, ticket).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.join("Note.md")).unwrap(),
             "#magma\n"
@@ -2009,12 +2018,10 @@ mod tests {
         let mut m = merge::plan(&core.index, source, target).unwrap();
         assert_eq!(m.links(), 1, "the CSV's link is counted");
         let bin = crate::trash::Bin::Folder(dir.join("bin"));
-        assert!(
-            merge::apply(&m, Some(&bin)).is_err(),
-            "not before csv-table answered"
-        );
+        let early = merge::apply(&m, |_| panic!("trashed before csv-table answered"));
+        assert!(early.is_err(), "not before csv-table answered");
         core.set_system_trash(Some(bin));
-        let Applying::Later(ticket) = core.apply(&mut m) else {
+        let Applying::Later(ticket) = core.apply("test", &mut m) else {
             panic!("waits for csv-table");
         };
         let (_, ask) = core.take_file_edits().pop().unwrap();
@@ -2034,7 +2041,7 @@ mod tests {
             Ok(given("Krakatau")),
         );
         assert_eq!(core.take_relinked(), [ticket]);
-        core.apply_answered(&mut m, ticket).unwrap();
+        core.apply_answered("test", &mut m, ticket).unwrap();
         core.rescan_now();
         let csv = std::fs::read_to_string(ws.join("Eruptions.csv")).unwrap();
         assert_eq!(csv, "Krakatau\n");
@@ -2160,7 +2167,7 @@ mod tests {
             let note = core.index.by_rel(from).unwrap();
             let mut plan = crate::rename::plan(&core.index, note, to).unwrap();
             assert!(plan.edits.iter().all(|e| e.owned.is_some()), "its owner's");
-            let made = core.apply(&mut plan);
+            let made = core.apply("test", &mut plan);
             assert!(
                 matches!(&made, Applying::Now(Ok(()))),
                 "answered at once: {made:?}"

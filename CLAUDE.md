@@ -130,7 +130,11 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   drops an answer not taken. The owners' answers never go out to a frontend, which holds only
   the plan and the ticket, and a file other owners read that has no answer is refused.
   `rename::apply`, `merge::apply` and `recipe::apply` are the engine's own, so no frontend
-  writes a plan around it. One hole is left: a frontend that sets an edit's `owned` to `None`
+  writes a plan around it. Each is made on behalf of a client (`by`: the menu's `MENU`, the
+  command line's `cold-lava`, and for `run_recipe` the shape's or the extension's name): a
+  merge's source goes to the trash through the core's delete, so `Event::Deleted` names who
+  merged and the token is kept for them, and `Core::undo_merge` puts it back through
+  `restore_file` (#270 B4). One hole is left: a frontend that sets an edit's `owned` to `None`
   has the core write that file without asking its owner, until plans are kept by ticket
   (#193). Reading the workspace again afterwards is still the caller's.
   `core/news.rs` (tests only) is the harness for what subscribers hear and in which order: it
