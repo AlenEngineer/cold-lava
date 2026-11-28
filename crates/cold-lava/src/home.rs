@@ -1286,8 +1286,8 @@ impl Home {
     }
 
     /// `workspace/open`: the note at `note` (inside the workspace, absolute or relative to it),
-    /// at `line`, from where you are. The path is read as the gateway reads one
-    /// (`files::resolve`), so no hidden folder and no symlink.
+    /// at `line`, from where you are. `note` is the gateway's normal spelling of a path inside
+    /// the workspace: the host read it (`Host::open_note`).
     fn open_for(&mut self, ext: ExtId, note: &Path, line: Option<usize>, item: Option<String>) {
         let Some(root) = self.root.clone() else {
             return;
@@ -1296,13 +1296,6 @@ impl Home {
             return self.held_back(ext, &format!("open {}", note.display()), why);
         }
         let rel = rel_path::or_whole(&root, note);
-        let path = match files::resolve(&root, &rel) {
-            Ok(path) => path,
-            Err(e) => {
-                let name = &self.registry.manifest(ext).name;
-                return self.flash(format!("{name} asked to open {}", e.message));
-            }
-        };
         let owned = (self.core.as_ref())
             .and_then(|c| (c.index.workspace.owned.iter()).find(|f| f.rel == rel));
         if let Some(f) = owned {
@@ -1314,6 +1307,7 @@ impl Home {
             }
             return self.open_file_at(&path, place);
         }
+        let path = root.join(&rel);
         if !path.is_file() {
             let name = &self.registry.manifest(ext).name;
             let note = note.display();
@@ -1423,10 +1417,7 @@ impl Home {
                 Ok(Note { note }) if a == MenuAction::EditFullscreen => {
                     self.edit_note_fullscreen(&note, terminal)
                 }
-                Ok(Note { note }) => {
-                    self.open_note_in_obsidian(&note);
-                    Ok(())
-                }
+                Ok(Note { note }) => self.open_note_in_obsidian(&note),
                 Err(e) => Err(e.to_string()),
             },
             Some(c) => return self.run_menu_command(c, args, terminal),
@@ -5421,17 +5412,20 @@ impl Home {
     }
 
     /// `note.open-in-obsidian` of a note an extension names.
-    fn open_note_in_obsidian(&mut self, note: &str) {
+    fn open_note_in_obsidian(&mut self, note: &str) -> Result<(), String> {
         let Some(v) = self.workspaces.get(self.vsel) else {
-            return;
+            return Ok(());
         };
-        let rel = note.strip_suffix(".md").unwrap_or(note);
+        let note = files::normal(note).map_err(|e| e.message)?;
+        files::resolve(&v.path, &note).map_err(|e| e.message)?;
+        let rel = note.strip_suffix(".md").unwrap_or(&note);
         let ok = term::open_in_obsidian(&v.name, rel);
         self.flash(if ok {
             "opened in Obsidian"
         } else {
             "couldn't launch Obsidian"
         });
+        Ok(())
     }
 
     fn open_in_obsidian(&mut self) {

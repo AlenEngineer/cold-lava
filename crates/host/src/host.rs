@@ -11,6 +11,7 @@ use cold_lava_engine::files::{
 };
 use cold_lava_engine::gateway::{self, Answer, Edit, Found, Query, Reason, Select, SubId};
 use cold_lava_engine::owner::given::Given;
+use cold_lava_engine::rel_path;
 use cold_lava_engine::types::Type;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -133,8 +134,22 @@ impl Host<'_> {
     }
 
     /// `workspace/open`: show a note, at a line; or the file of the item `item` at its place.
-    pub fn open_note(&mut self, note: PathBuf, line: Option<usize>, item: Option<String>) {
+    /// The path, absolute under the workspace or relative to it, is read as the gateway reads
+    /// one (`files::resolve`: no hidden part, no `..`, no symlink), and the frontend is handed
+    /// it in its normal spelling, so it never sees a path the gateway refuses.
+    pub fn open_note(
+        &mut self,
+        note: PathBuf,
+        line: Option<usize>,
+        item: Option<String>,
+    ) -> Result<(), gateway::Error> {
+        let core = (self.core.as_deref())
+            .ok_or_else(|| gateway::Error::new(Reason::NoWorkspace, "no workspace is open"))?;
+        let rel = files::normal(&rel_path::or_whole(core.root(), &note))?;
+        files::resolve(core.root(), &rel)?;
+        let note = PathBuf::from(rel);
         self.effects.push(Effect::OpenNote { note, line, item });
+        Ok(())
     }
 
     /// The answer to `file/read` for a file of a kind it owns: its items and links join the

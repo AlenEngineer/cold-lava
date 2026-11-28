@@ -4005,7 +4005,7 @@ mod tests {
             host.notify("chatty counted");
             host.status(Some("chatty: 1".into()));
             if self.pushy {
-                host.open_note("Krakatoa.md".into(), None, None);
+                (host.open_note("Krakatoa.md".into(), None, None)).expect("it is a note");
                 host.run_command("search.open", Value::Null);
             }
             let answer: Result<act::Reply, String> = match &ask {

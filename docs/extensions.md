@@ -3319,8 +3319,9 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   `view/show {view}` brings one of its open views to the front, in place of
   what showed, which Back returns to, as `view/open` does; a view in front already, or not open,
   stays as it is. `workspace/open {note, line}` opens a note (an item's `note`, relative to
-  the workspace, or an absolute path inside it; anything else is refused on the status line) at
-  a line, from wherever the user is, which Back returns to; with `item`, an item's id, a file
+  the workspace, or an absolute path inside it, read as `workspace/read` reads one: a hidden
+  folder, `..` or a symlink is refused to the extension as a request is; a path to no file is
+  refused on the status line) at a line, from wherever the user is, which Back returns to; with `item`, an item's id, a file
   another owner reads opens in its owner at the item's place. Updates and closes of a view the
   extension doesn't have do nothing. The design's `title` and `place` are not there: the
   content has its title, and there is one place, the main area, until a second is needed.
