@@ -343,12 +343,11 @@ impl Extension for Tables {
                 };
                 match event {
                     view::Event::Activated { row } => {
-                        if let Some(at) = shown.at.get(&row) {
-                            if let Err(e) =
+                        if let Some(at) = shown.at.get(&row)
+                            && let Err(e) =
                                 host.open_note(at.note.clone().into(), Some(at.line), Some(row))
-                            {
-                                host.notify(e.message);
-                            }
+                        {
+                            host.notify(e.message);
                         }
                     }
                     view::Event::Edit { row, column, value } => {
