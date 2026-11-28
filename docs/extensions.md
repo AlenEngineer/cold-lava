@@ -1406,6 +1406,12 @@ graph all see the new date. None of them knew what a canvas is.
   written or created this way is read again at once, like an item edit, so the next query
   sees it. A path is refused unless it is relative, has no `..`, `.` or hidden part
   (`.obsidian`, `.trash`, `.git`), and neither it nor a folder on the way to it is a symlink.
+  A create's path follows the rule every new file and folder does (`files::new_path`, #422):
+  its names can't hold `[ ] | # ^` either, since a link couldn't point to them (before #422
+  `workspace/create` took them). For `{name, extension}`, each name tried is checked before
+  it is asked whether something is there, so a refusal names the first one and never tells
+  what is outside the workspace, and Obsidian's `newFileFolderPath` is refused, naming the
+  setting, when it would lead out.
 
   The gateway never follows a symlink, for reads and writes alike (#349). A file message on
   a path that is a link, or has one on the way to it, is `refused` (`Notes/x.md is a symbolic
@@ -2669,8 +2675,9 @@ round trip per link is never acceptable.
   workspace's root, then by name); then it starts with `./` (`[t](./Top.md)`).
   `Rewriter::link` resolves a link before and after a move and writes it again in its own style
   when it leads elsewhere; Markdown's owner (`owner::markdown::relink`) finds the links and puts
-  the new text in place. `resolver::new_note_path` and `new_file_path` say where
-  a new note or file goes; `files::new_note` checks that a new note's stays in the workspace.
+  the new text in place. `resolver::new_file_path` says where a new note or file goes;
+  `files::new_file` (and `files::new_note` for a note) checks that a new file's path stays in
+  the workspace.
 - **Agreement is tested.** `resolver.rs`'s tests write a link to every file from every note in
   every style, over the example workspace and over a fixture with same-name notes, and check
   that `Files` and `Resolver` both lead it back to the same file. `graph.rs` checks each `./`
