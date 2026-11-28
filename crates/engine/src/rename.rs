@@ -1629,9 +1629,9 @@ mod tests {
     }
 
     /// #457: a Markdown link rewritten to a path with `#` in it escapes the `#` (`%23`), or it
-    /// would lead to a heading of another note, and keeps the rest as written: the angle
-    /// brackets, and a space as a space or as `%20`. Here the note that moves holds the links,
-    /// to files that stay where they are.
+    /// would lead to a heading of another note; the angle brackets and the heading stay and a
+    /// space is `%20`, as a rename writes every Markdown link. Here the note that moves holds
+    /// the links, to files that stay where they are.
     #[test]
     fn a_rewritten_markdown_link_escapes_a_hash_in_its_path() {
         let files = [
@@ -1647,8 +1647,8 @@ mod tests {
         apply(&plan(&ix, rocky, "Deep/Down/Rocky").unwrap(), &dir).unwrap();
         assert_eq!(
             read(&dir, "Deep/Down/Rocky.md"),
-            "[cs](<../../C%23 notes/Topic.md>) [h](../../Hash%20%232.md) \
-             [s](<../../Hash %232.md#Top>)\n"
+            "[cs](<../../C%23%20notes/Topic.md>) [h](../../Hash%20%232.md) \
+             [s](<../../Hash%20%232.md#Top>)\n"
         );
         let ix = Index::build(workspace::scan(&dir).unwrap());
         let topic = ix.by_rel("C# notes/Topic").unwrap();

@@ -567,11 +567,7 @@ impl Writer<'_> {
             Value::Link => match old {
                 Some(o) if !o.starts_with("[[") && o.starts_with('[') && o.contains("](") => {
                     let original = o.split_once("](").map_or("", |(_, t)| t);
-                    let target = workspace::encode_target_like(s, original);
-                    match original.starts_with('<') {
-                        true => format!("[{s}](<{target}.md>)"),
-                        false => format!("[{s}]({target}.md)"),
-                    }
+                    format!("[{s}]({}.md)", workspace::encode_target_like(s, original))
                 }
                 Some(o) if !o.starts_with('[') => s.to_string(),
                 Some(_) => format!("[[{s}]]"),

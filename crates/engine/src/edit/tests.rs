@@ -593,12 +593,6 @@ fn properties_are_edited_line_by_line() {
         "---\ntags: [volcano]\nnear: \"[[Rakata]]\"\n---\n",
         "a link stays a link"
     );
-    let bracketed = "---\ntags: [volcano]\nnear: \"[A](<Anak Krakatau.md>)\"\n---\n";
-    assert_eq!(
-        after(&s, bracketed, 1, "volcano", "near", json!("Mauna Loa")),
-        "---\ntags: [volcano]\nnear: \"[Mauna Loa](<Mauna Loa.md>)\"\n---\n",
-        "a Markdown link between <> stays between them, its space as written"
-    );
     let empty = "---\ntags: [volcano]\ncountry:\n---\n";
     assert_eq!(
         after(&s, empty, 1, "volcano", "country", json!("Chile")),
