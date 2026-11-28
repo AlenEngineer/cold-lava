@@ -1533,6 +1533,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&outside);
     }
 
+    /// #452: the plan checks what moves as it checks where it lands (`check_path`), so no
+    /// caller has to. A source outside the workspace, in a hidden folder, or in a spelling
+    /// other than its own (`Notes//Lava.md` would move `Notes/Lava.md` and leave the links
+    /// to it unrewritten) is refused, and nothing is looked up at it.
+    #[test]
+    fn a_source_that_is_not_a_workspace_path_is_refused() {
+        let files = [("Notes/Lava.md", "hot"), (".hidden/Ash.md", "fine")];
+        let (dir, ix) = workspace_with(
+            "from-path",
+            &[("Rocky.md", "[[Notes/Lava]]\n"), files[0], files[1]],
+        );
+        let outside = dir.with_extension("outside.md");
+        std::fs::write(&outside, "far").unwrap();
+        let outside_rel = format!("../{}", outside.file_name().unwrap().to_str().unwrap());
+        for from in [
+            "Notes//Lava.md",
+            "Notes/./Lava.md",
+            ".hidden/Ash.md",
+            outside_rel.as_str(),
+        ] {
+            let refused = plan_into(&ix, &[from.to_string()], "Archive").unwrap_err();
+            assert_eq!(
+                refused.to_string(),
+                format!("not a valid path inside the workspace: {from}")
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
+    }
+
     /// #397, the source side: what moves can't be reached through a symlinked folder either,
     /// or the move would pull a folder or file from outside into the workspace and take it
     /// from where it was. Refused when planned and, for a link put in after the plan, by
