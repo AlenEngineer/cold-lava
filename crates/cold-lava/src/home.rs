@@ -3795,7 +3795,7 @@ impl Home {
         let Some(core) = self.core.as_mut() else {
             return;
         };
-        let made = match core.apply(&mut **plan) {
+        let made = match core.apply(MENU, &mut **plan) {
             Applying::Later(ticket) => {
                 *waiting = Some(ticket);
                 return self.ask_owners();
@@ -3842,18 +3842,20 @@ impl Home {
                 Mode::ConfirmRename {
                     mut plan, marked, ..
                 } => {
-                    let made = core.apply_answered(&mut *plan, ticket).map(|()| *plan);
+                    let made = core
+                        .apply_answered(MENU, &mut *plan, ticket)
+                        .map(|()| *plan);
                     self.renamed(made, marked);
                 }
                 Mode::ConfirmMerge { mut plan, .. } => {
-                    let made = core.apply_answered(&mut *plan, ticket);
+                    let made = core.apply_answered(MENU, &mut *plan, ticket);
                     self.merged(made.map(|done| (*plan, done)));
                 }
                 Mode::Recipe(view) => {
                     let recipe_view::Step::Plan { mut plan, .. } = view.step else {
                         continue;
                     };
-                    let made = core.apply_answered(&mut *plan, ticket);
+                    let made = core.apply_answered(MENU, &mut *plan, ticket);
                     self.recipe_applied(made.map(|done| (*plan, done)));
                 }
                 _ => {}
@@ -4140,7 +4142,7 @@ impl Home {
                 let Some(core) = self.core.as_mut() else {
                     return;
                 };
-                let made = match core.apply(&mut **plan) {
+                let made = match core.apply(MENU, &mut **plan) {
                     Applying::Later(ticket) => {
                         *waiting = Some(ticket);
                         return self.ask_owners();
@@ -4215,7 +4217,11 @@ impl Home {
 
     fn undo_merge(&mut self, m: crate::merge::Merged) {
         self.save_editor();
-        if let Err(e) = crate::merge::undo(&m) {
+        let undone = match self.core.as_mut() {
+            Some(core) => core.undo_merge(MENU, &m),
+            None => Err(anyhow!("no workspace is open")),
+        };
+        if let Err(e) = undone {
             self.flash(format!("{e:#}"));
             return self.push_undo(Undo::Merge(Box::new(m)));
         }
@@ -4285,7 +4291,7 @@ impl Home {
                 let Some(core) = self.core.as_mut() else {
                     return;
                 };
-                let made = match core.apply(&mut **plan) {
+                let made = match core.apply(MENU, &mut **plan) {
                     Applying::Later(ticket) => {
                         *waiting = Some(ticket);
                         self.mode = Mode::Recipe(view);

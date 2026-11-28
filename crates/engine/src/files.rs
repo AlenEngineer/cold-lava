@@ -16,7 +16,7 @@ use crate::gateway::{Error, Reason};
 use crate::index::Index;
 use crate::read::{Seen, rev};
 use crate::rel_path;
-use crate::trash::{self, Bin, Trashed, Went};
+use crate::trash::{self, Trashed, Went};
 use crate::workspace;
 use crate::write::{self, WriteError};
 
@@ -531,7 +531,7 @@ fn contents(root: &Path, rel: &str) -> Result<Seen, Error> {
     })
 }
 
-fn moved<'a>(root: &'a Path, rel: &'a str) -> impl Fn(WriteError) -> Error + 'a {
+pub(crate) fn moved<'a>(root: &'a Path, rel: &'a str) -> impl Fn(WriteError) -> Error + 'a {
     as_refused(root, rel, "since it was read")
 }
 
@@ -564,21 +564,17 @@ pub fn stat(root: &Path, rel: &str) -> Result<Stat, Error> {
     Ok(stat)
 }
 
-/// `workspace/delete`, through `trash::delete`: to the trash the workspace's `trashOption`
-/// names (`system` is the system trash, when there is one), never for good.
-pub fn delete(
-    root: &Path,
-    rel: &str,
-    expect: &str,
-    system: Option<&Bin>,
-) -> Result<Trashed, Error> {
+/// What `workspace/delete` would put in the trash: the entry at `rel`, refused unless it is
+/// still the version `expect`. The core trashes it (`Core::delete_file`), and a refusal of that
+/// is worded by `moved`.
+pub fn to_delete(root: &Path, rel: &str, expect: &str) -> Result<Seen, Error> {
     let rel = &normal_or_kept(root, rel)?;
     let now = contents(root, rel)?;
     if now.rev() != expect {
         let message = format!("{rel} changed since it was read: read it again");
         return Err(Error::new(Reason::Changed, message));
     }
-    trash::delete(root, &now, system).map_err(moved(root, rel))
+    Ok(now)
 }
 
 /// `workspace/restore`, through `trash::restore`: back where it was, or at `to`. The answer
@@ -801,6 +797,7 @@ pub(crate) fn of_kinds(workspace: &workspace::Workspace, extensions: &[&str]) ->
 mod tests {
     use super::*;
     use crate::core::{Core, Event};
+    use crate::trash::Bin;
     use serde::de::DeserializeOwned;
     use serde_json::{Value, json};
     use std::fmt::Debug;
@@ -1088,14 +1085,14 @@ mod tests {
         let stale = replace(&dir, "Data/Eruptions.csv", "lost", &was.rev).unwrap_err();
         let changed = "Data/Eruptions.csv changed since it was read: read it again";
         assert_eq!(said(stale), (Reason::Changed, changed.into()));
-        let stale = delete(&dir, "Data/Eruptions.csv", &shown.rev, None).unwrap_err();
+        let stale = to_delete(&dir, "Data/Eruptions.csv", &shown.rev).unwrap_err();
         assert_eq!(said(stale), (Reason::Changed, changed.into()));
         let gone = replace(&dir, "Data/Gone.csv", "x", &was.rev).unwrap_err();
         let words = "Data/Gone.csv is gone: create it with workspace/create";
         assert_eq!(said(gone), (Reason::Changed, words.into()));
         let is_gone = (Reason::Changed, "Data/Gone.csv is gone".to_string());
         assert_eq!(said(stat(&dir, "Data/Gone.csv").unwrap_err()), is_gone);
-        let gone = delete(&dir, "Data/Gone.csv", &shown.rev, None).unwrap_err();
+        let gone = to_delete(&dir, "Data/Gone.csv", &shown.rev).unwrap_err();
         assert_eq!(said(gone), is_gone);
         std::fs::write(dir.join("Data/bytes.csv"), [0xff, 0xfe]).unwrap();
         let binary = read(&dir, "Data/bytes.csv").unwrap_err();

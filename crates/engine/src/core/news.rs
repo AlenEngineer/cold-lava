@@ -43,7 +43,7 @@
 use super::*;
 use crate::gateway::{Filter, Op, Page};
 use crate::owner::given::GivenItem;
-use crate::{recipe, rename};
+use crate::{merge, recipe, rename};
 
 /// The extension the harness plays: it owns `.lines` files, each line a Markdown piece at its
 /// line number.
@@ -328,7 +328,7 @@ impl Harness {
     /// The menu confirms a rename (`Core::apply`): made at once and everything read again, or
     /// the ticket it waits under when an extension has to give a file's new text.
     pub(crate) fn apply_rename(&mut self, plan: &mut rename::Plan) -> Option<Ticket> {
-        match self.call(|core| core.apply(plan)) {
+        match self.call(|core| core.apply("menu", plan)) {
             Applying::Now(made) => {
                 made.unwrap();
                 self.rescan();
@@ -355,7 +355,29 @@ impl Harness {
         plan: &mut rename::Plan,
         ticket: Ticket,
     ) -> Result<(), NotApplied> {
-        self.call(|core| core.apply_answered(plan, ticket))?;
+        self.call(|core| core.apply_answered("menu", plan, ticket))?;
+        self.rescan();
+        Ok(())
+    }
+
+    /// A merge as the menu makes it on behalf of `by`, when no extension has to answer:
+    /// planned, made by the core (`Core::apply`), then everything read again.
+    pub(crate) fn merge(&mut self, by: &str, source: &str, target: &str) -> merge::Merged {
+        let ix = &self.core.index;
+        let (s, t) = (ix.by_rel(source).unwrap(), ix.by_rel(target).unwrap());
+        let mut plan = merge::plan(ix, s, t).unwrap();
+        let Applying::Now(made) = self.call(|core| core.apply(by, &mut plan)) else {
+            panic!("an extension has to answer");
+        };
+        let merged = made.unwrap();
+        self.rescan();
+        merged
+    }
+
+    /// The menu undoes the merge `m` on behalf of `by` (`Core::undo_merge`), then everything
+    /// is read again; or why it isn't undone.
+    pub(crate) fn undo_merge(&mut self, by: &str, m: &merge::Merged) -> anyhow::Result<()> {
+        self.call(|core| core.undo_merge(by, m))?;
         self.rescan();
         Ok(())
     }
@@ -365,7 +387,7 @@ impl Harness {
     pub(crate) fn recipe(&mut self, id: &str, options: &[(&str, &str)]) -> recipe::Applied {
         let recipe = recipe::find(id).unwrap();
         let mut plan = recipe::plan(&self.core.index, recipe, named(options)).unwrap();
-        let Applying::Now(made) = self.call(|core| core.apply(&mut plan)) else {
+        let Applying::Now(made) = self.call(|core| core.apply("menu", &mut plan)) else {
             panic!("an extension has to answer");
         };
         let applied = made.unwrap();
@@ -389,7 +411,7 @@ impl Harness {
         id: &str,
         options: &[(&str, &str)],
     ) -> Result<String, gateway::Error> {
-        self.call(|core| core.run_recipe(id, named(options)))
+        self.call(|core| core.run_recipe("canvas", id, named(options)))
     }
 
     /// The owner answers the `file/edit` requests waiting for it. How many there were.
@@ -1516,6 +1538,39 @@ fn a_delete_and_its_restore_are_heard_once_each_in_order_and_name_who_made_them(
 
     let once = vec!["items/changed"];
     assert_eq!(h.heard("agenda"), [once.clone(), vec![], once, vec![]]);
+}
+
+/// D4 (#267). A merge's source goes to the trash through the core's delete: read inside the
+/// call, so `Deleted` comes once, after the events of what went, naming who merged, and the
+/// watcher's late report of it is no news. Its undo puts it back through the core's restore,
+/// by the token kept for that client alone.
+#[test]
+fn a_merge_s_delete_and_its_undo_are_heard_once_each_in_order_and_name_who_made_them() {
+    let mut h = workspace("merge-trash");
+    h.follow("agenda", tasks());
+    let merged = h.merge("menu", "Ash", "Plan");
+    assert_eq!(h.read(".trash/Ash.md"), ASH, "in the test's own folder");
+    assert!(h.read("Plan.md").contains("Sweep the ash"));
+    let batch = h.deliver();
+    let events = [Event::NoteRemoved("Ash".into()), deleted("Ash.md", "menu")];
+    assert_eq!(batch.events, events);
+    assert_eq!(batch.channel[..2], events);
+    assert_eq!(h.count("agenda", "Sweep the ash"), 1, "now in Plan");
+    h.saw("Ash.md");
+    h.saw("Plan.md");
+    assert!(h.deliver().is_empty(), "the watcher's report is no news");
+
+    let theirs = h.undo_merge("tidy", &merged).unwrap_err();
+    assert!(format!("{theirs:#}").contains("nothing you deleted goes by that token"));
+    assert!(h.deliver().is_empty(), "nothing was undone");
+    h.undo_merge("menu", &merged).unwrap();
+    assert_eq!(h.read("Ash.md"), ASH);
+    assert_eq!(h.read("Plan.md"), PLAN);
+    let batch = h.deliver();
+    let events = [Event::NoteCreated("Ash".into()), restored("Ash.md", "menu")];
+    assert_eq!(batch.events, events);
+    assert_eq!(h.count("agenda", "Sweep the ash"), 1, "back in Ash");
+    assert!(h.undo_merge("menu", &merged).is_err(), "undone once");
 }
 
 /// The dialog read the note, another program wrote it, and the watcher hasn't said so yet: the
