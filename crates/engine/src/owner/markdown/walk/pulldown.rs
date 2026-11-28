@@ -5,7 +5,7 @@ use super::*;
 use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
 
 /// The items of the note at `note` whose text is `text`, read by pulldown-cmark.
-pub(crate) fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
+pub(super) fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     if s.templates.is_template(note) {
         return Vec::new();
     }
@@ -14,7 +14,7 @@ pub(crate) fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     let wants = Wants::of(&s.matcher);
     let mut pass = pass(&lines, &s.flavour, wants);
     pass.written = written(lines.src, &s.flavour, wants);
-    finish(note, text, s, &source, &lines, pass)
+    ids::of(note, text, finish(note, text, s, &source, &lines, pass))
 }
 
 /// Where the tags and the links are written, which a block's own are read from. The tree says:

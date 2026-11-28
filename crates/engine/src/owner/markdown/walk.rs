@@ -4,11 +4,11 @@
 //! were (`pulldown`, a test, compares the two). Types match after it (`typed`): the walk
 //! collects the blocks some type reads, and `matcher` says which type each one is and which
 //! inline types sit in its text. A task is a list item the built-in `task` type
-//! (`types/task.toml`) matches. Each item's key is made here (`keys`), and its id from that key
-//! by `items::identify`.
+//! (`types/task.toml`) matches. Each item's key is made here (`keys`), then its id from that key
+//! and its rev from its lines (`ids`, with `twins`).
 
 use crate::cst::{self, Kind, Step};
-use crate::items::{Data, Item, Raw, Settings};
+use crate::items::{Data, Item, Settings};
 use crate::markdown::{self, Flavour, Syntax};
 use crate::matcher::{self, Matcher};
 use crate::sources::On;
@@ -18,9 +18,13 @@ use std::ops::Range;
 use typed::finish;
 
 mod block_text;
+mod ids;
 mod keys;
 #[cfg(test)]
-pub(crate) mod pulldown;
+mod pulldown;
+#[cfg(test)]
+mod tests;
+mod twins;
 mod typed;
 
 /// The items of the note at workspace-relative `note` (with `.md`) whose text is `text`.
@@ -42,7 +46,19 @@ pub fn items(note: &str, text: &str, s: &Settings) -> Vec<Item> {
         mut pass, written, ..
     } = walk;
     pass.written.links = own_links(written.finish(&defs));
-    finish(note, text, s, &source, &lines, pass)
+    ids::of(note, text, finish(note, text, s, &source, &lines, pass))
+}
+
+/// An item before its id: an id needs its parent's, so ids are given once the note is read.
+struct Raw {
+    line: usize,
+    end_line: usize,
+    section: Vec<String>,
+    parent: Option<usize>,
+    block_id: Option<String>,
+    data: Data,
+    /// A typed item's key: its shape's `key` fields, or what tells its primitive apart.
+    key: String,
 }
 
 /// A block some loaded type reads, found in the pass and matched once the note is read.

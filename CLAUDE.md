@@ -297,8 +297,11 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   (`walk.rs`, the caller, and the `Walk` tool it drives) reads a note's items in one walk
   through its tree (`cst::read`) in the workspace's flavour; `walk/typed.rs` matches the types
   over what it found, `walk/keys.rs` makes each item's key (block id, heading path, or text
-  hash under the parent, then `.n` for the nth repeat; a typed aside's set apart), and
-  `walk/block_text.rs` is where a block's words are (leaves). The matcher's text readings
+  hash under the parent, then `.n` for the nth repeat; a typed aside's set apart,
+  `keys::aside`), `walk/ids.rs` gives each item its id from its key (`identity::id`) and its
+  rev from its lines, or a twin's (`walk/twins.rs`), and `walk/block_text.rs` is where a
+  block's words are (leaves). Only `Item`, `Data` and `Settings` cross from the walk to the
+  core, and calls go one way: the core asks the owner. The matcher's text readings
   (Dataview fields, markers, checkboxes, `^id`) and its value parsing are still in
   `matcher.rs`, the second half of step D-3 (#272). Its `links` is the one reading of a note's links, from
   the tree: `read` (backlinks, the graph), `link_targets` (tidy), `relink` (renames, which
@@ -410,16 +413,15 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   an owner gave is ticked as `Change::Field` on `status`. The protocol has no change that
   adds, moves or removes a piece yet, and `items/edit` takes no runs.
 - `items.rs`: notes as data: the wire model (`Item`, `Data`, a typed item's fields), the
-  `Settings` a note is read with, and the ids. `extract()` gives a note's `Item`s (task, list,
-  heading, block) as its owner reads them (`owner::markdown::items`, the walk above);
-  `Workspace::items()` caches them per note on first use. `identify` makes each id from the
-  key the owner made (`identity::id`). Ids are stable (block id, heading path, or text hash under
+  `Settings` a note is read with. `extract()` gives a note's `Item`s (task, list, heading,
+  block) as its owner reads them, ids made (`owner::markdown::items`, the walk above);
+  `Workspace::items()` caches them per note on first use. Ids are stable (block id, heading path, or text hash under
   the parent, then `.n` for the nth repeat), `rev` hashes the item's lines, and a twin's (a
-  repeat whose lines another has too, `items/twins.rs`) also how many twins there are and,
+  repeat whose lines another has too, `owner/markdown/walk/twins.rs`) also how many twins there are and,
   under a twin, that twin's rev (`identity::twin_rev`), so an edit held by an address another
   twin took is refused as changed (#327). The walk reads blocks as pulldown-cmark, which
   read them before, did, so ids didn't move; `owner/markdown/walk/pulldown.rs` keeps that
-  pass for a test (in `items.rs`) that compares the two on every note of the corpus.
+  pass for a test (`walk/tests.rs`) that compares the two on every note of the corpus.
   pulldown-cmark is a dev-dependency of the engine: those two test modules
   (`owner/markdown/walk/pulldown.rs`, `markdown/pulldown.rs`) are all
   that use it, and nothing shipped may. Read tasks through items, not by scanning lines.
@@ -571,11 +573,11 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   are listed on #365.
 - `identity.rs`: the hash every id and rev is made with (`fnv`, FNV-1a; `hash`, as 16 hex
   digits), the last step of every id (`id`: the file, the kind and the key with a NUL between
-  each two, hashed), a rev of text (`line_id`) and a twin's (`twin_rev`, `items/twins.rs`: of
+  each two, hashed), a rev of text (`line_id`) and a twin's (`twin_rev`, `walk/twins.rs`: of
   its lines, how many twins there are and, under a twin, that twin's rev). A leaf. Each owner
-  makes its own key: a note's items in the Markdown owner (`owner/markdown/walk/keys.rs`; a
-  typed item's in `matcher.rs`), then `items::identify` hashes it; an owner's pieces and
-  typed items from the place it gave. Changing a key moves ids as surely as changing
+  makes its own key and calls `id` itself: a note's items in the Markdown owner
+  (`owner/markdown/walk/keys.rs`, then `walk/ids.rs`; a typed item's key in `matcher.rs`),
+  an owner's pieces and typed items from the place it gave (`owner/given.rs`). Changing a key moves ids as surely as changing
   `identity.rs`, and either is the owner's decision; its tests pin ids given before.
 - `bounded.rs`: the types another program's answer is held in (`file/read`, `file/edit`,
   `shape/region`, `shape/gesture`): `Text`, `List`, `Fields` and `Pairs`, each naming its

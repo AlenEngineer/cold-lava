@@ -2,13 +2,11 @@
 //! blocks with an id), so features ask for them instead of parsing notes themselves. See
 //! "Notes as data" in docs/extensions.md.
 //!
-//! The wire model (`Item`, `Data`, a typed item's fields), the settings a note is read with,
-//! and the ids: Markdown reads a note's items and makes their keys (`owner::markdown::items`),
-//! and `identify` gives each item its id and rev.
+//! The wire model (`Item`, `Data`, a typed item's fields) and the settings a note is read with.
+//! Markdown reads a note's items and gives them their ids (`owner::markdown::items`).
 
 use crate::configured::Configured;
 use crate::daily;
-use crate::identity;
 use crate::markdown::{self, Flavour};
 use crate::matcher::{Matcher, Typed};
 use crate::owner::markdown::attributes::{self, Readings};
@@ -130,7 +128,8 @@ pub struct Item {
     pub block_id: Option<String>,
     /// Fingerprint of the item's own lines: which version of it this is. For a twin whose lines
     /// another twin has, it also holds how many twins there are and the rev of the twin it is
-    /// under (`items/twins.rs`, `identity::twin_rev`), so a twin that moves changes its rev.
+    /// under (`owner/markdown/walk/twins.rs`, `identity::twin_rev`), so a twin that moves
+    /// changes its rev.
     pub rev: String,
     #[serde(flatten)]
     pub data: Data,
@@ -233,118 +232,19 @@ impl<'de> Deserialize<'de> for Typed {
     }
 }
 
-/// An item before its id: an id needs its parent's, so ids are given once the note is read.
-pub(crate) struct Raw {
-    pub(crate) line: usize,
-    pub(crate) end_line: usize,
-    pub(crate) section: Vec<String>,
-    pub(crate) parent: Option<usize>,
-    pub(crate) block_id: Option<String>,
-    pub(crate) data: Data,
-    /// A typed item's key: its shape's `key` fields, or what tells its primitive apart.
-    pub(crate) key: String,
-}
-
-/// Each item's key, as its owner made it, in the order of its items: the key, what its anchor
-/// is made of (the item it is keyed under, whose key the anchor starts with, and what the anchor
-/// has after that key) and whether an anchor was counted twice, so that two items may be twins.
-pub(crate) struct Keys {
-    pub(crate) keys: Vec<String>,
-    pub(crate) anchors: Vec<(Option<usize>, String)>,
-    pub(crate) repeated: bool,
-}
-
 /// The items of the note at workspace-relative `note` (with `.md`) whose text is `text`, as its
 /// owner, Markdown, reads them (`owner::markdown::items`).
 pub fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     crate::owner::markdown::items(note, text, s)
 }
 
-/// Gives each item its id and rev, in document order (a parent before its children): the id of
-/// its key (`keys`, as its owner made it), and the rev of its lines, or a twin's (`twins`).
-pub(crate) fn identify(note: &str, text: &str, raws: Vec<Raw>, keys: Keys) -> Vec<Item> {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut items: Vec<Item> = Vec::with_capacity(raws.len());
-    // An item's own lines, joined, reused from item to item.
-    let mut joined = String::new();
-    for (raw, key) in raws.into_iter().zip(&keys.keys) {
-        let id = identity::id(&[note, raw.data.kind(), key]);
-        joined.clear();
-        for (i, line) in (lines.get(raw.line - 1..raw.end_line.min(lines.len())))
-            .unwrap_or_default()
-            .iter()
-            .enumerate()
-        {
-            if i > 0 {
-                joined.push('\n');
-            }
-            joined.push_str(line);
-        }
-        items.push(Item {
-            id,
-            note: note.to_string(),
-            line: raw.line,
-            end_line: raw.end_line,
-            section: raw.section,
-            parent: raw.parent.map(|p| items[p].id.clone()),
-            block_id: raw.block_id,
-            rev: identity::line_id(&joined),
-            data: raw.data,
-        });
-    }
-    // Skipped for speed (#327): it cost every note about 40 µs, though with no anchor counted
-    // twice every key is its anchor and no two of a kind share one, so no item has a twin.
-    // A debug build runs it anyway and checks that it changes nothing, on every note a test reads.
-    if keys.repeated {
-        twin_revs(&mut items, &keys.anchors);
-    } else if cfg!(debug_assertions) {
-        let mut passed = items.clone();
-        twin_revs(&mut passed, &keys.anchors);
-        assert_eq!(passed, items, "the skipped twin pass would change {note}");
-    }
-    items.sort_by_key(|i| i.line);
-    items
-}
-
-/// Gives the items one of whose twins has the same lines a twin's rev (`twins`): `items` as
-/// `identify` made them, a parent before its children, and what their anchors are made of.
-fn twin_revs(items: &mut [Item], anchors: &[(Option<usize>, String)]) {
-    let revs = {
-        let keyed: Vec<twins::Keyed> = (items.iter().zip(anchors))
-            .map(|(item, (under, own))| twins::Keyed {
-                kind: item.data.kind(),
-                under: *under,
-                own,
-                rev: &item.rev,
-            })
-            .collect();
-        // A twin's rev for each twin. The item it is under comes before it, so that one's rev
-        // is here when it is a twin's, and else is the rev of its lines.
-        let mut revs: Vec<Option<String>> = Vec::with_capacity(keyed.len());
-        for (item, twin) in keyed.iter().zip(twins::of(&keyed)) {
-            let rev = twin.map(|twin| {
-                let under = (twin.under).map(|p| revs[p].as_deref().unwrap_or(keyed[p].rev));
-                identity::twin_rev(item.rev, twin.twins, under)
-            });
-            revs.push(rev);
-        }
-        revs
-    };
-    for (item, rev) in items.iter_mut().zip(revs) {
-        if let Some(rev) = rev {
-            item.rev = rev;
-        }
-    }
-}
-
 pub mod anchors;
-mod twins;
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::cst;
-    use crate::owner::markdown::walk::pulldown;
+    use crate::identity;
     use serde_json::json;
 
     pub(crate) fn settings(flavour: &str) -> Settings {
@@ -700,7 +600,7 @@ Setext
         assert_eq!((&open[1].rev, &open[2].rev), (&done[1].rev, &done[2].rev));
     }
 
-    /// A note in which no anchor is counted twice skips the twin pass (`identify`, for
+    /// A note in which no anchor is counted twice skips the twin pass (`walk/ids.rs`, for
     /// speed), and a debug build checks there that the pass would change nothing. This reads
     /// every note of the example workspace, the corpus and the tricky cases, and a note with
     /// no twins at all, so that check runs on each.
@@ -811,7 +711,7 @@ where.inside = ["quote"]
 fields.w = { capture = "w" }
 "#;
 
-    fn every_type(flavour: &str) -> Settings {
+    pub(crate) fn every_type(flavour: &str) -> Settings {
         with_types(flavour, EVERY_TYPE)
     }
 
@@ -917,97 +817,6 @@ fields.w = { capture = "w" }
         // Tags right after the markers that open emphasis and a strikethrough.
         "Read **#bold** and _#slanted_, *#star*, __#under__, ***#both*** and ~~#gone~~, but a#b and http://x.y/#frag are no tags.\n",
     ];
-
-    /// Markdown pulldown-cmark read otherwise than Obsidian shows it, where the items differ
-    /// from the ones it gave.
-    const DIFFERENT: &[&str] = &[
-        // A frontmatter whose first line is blank, as the Kanban plugin writes it, was a rule
-        // and Markdown.
-        "---\n\nkanban-plugin: basic\n- [ ] YAML\n\n---\n\n- [ ] Pack\n",
-        // A `---` line after a blank line, with a `---` or `...` line below it, opened YAML in
-        // the middle of a note, hiding what was between.
-        "Intro\n\n---\n- [ ] between the rules\n---\n\n- [ ] after\n",
-        // A byte order mark made the first line text.
-        "\u{feff}- [ ] first\n- [ ] second\n",
-        // `[[#Heading]]` held the tag `Heading`.
-        "See [[#Heading]].\n",
-        // A highlight was text to pulldown-cmark, so the tag right after its `==` was none. It
-        // is one in Obsidian.
-        "Read ==#marked==.\n",
-        // `[[A\|B]]` in a table cell, where the pipe before the alias is escaped so that it
-        // doesn't end the cell, linked to `A\`. The note is `A`.
-        "| [[A\\|B]] | c |\n| --- | --- |\n| d | [[E\\|F]] |\n",
-    ];
-
-    /// How the tree's items and pulldown-cmark's differ for one note, if they do.
-    fn difference(name: &str, text: &str, s: &Settings) -> Option<String> {
-        let (tree, old) = (extract(name, text, s), pulldown::extract(name, text, s));
-        if tree == old {
-            return None;
-        }
-        let short = |i: Option<&Item>| format!("{i:?}").chars().take(400).collect::<String>();
-        let mut out = format!(
-            "{name} ({}): {} items, pulldown-cmark {}",
-            s.flavour.name,
-            tree.len(),
-            old.len()
-        );
-        let n = tree.len().max(old.len());
-        for k in (0..n).filter(|&k| tree.get(k) != old.get(k)).take(3) {
-            out += &format!(
-                "\n  tree: {}\n  then: {}",
-                short(tree.get(k)),
-                short(old.get(k))
-            );
-        }
-        Some(out)
-    }
-
-    /// The walk through the tree gives every note the items pulldown-cmark gave it: the example
-    /// workspace as `cold-lava items` reads it, then every Markdown file of the repository and
-    /// the tricky cases in each flavour, with types that read every kind of block.
-    #[test]
-    fn the_tree_reads_items_as_pulldown_cmark_did() {
-        let mut differ = Vec::new();
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
-        let s = Settings::load(&workspace, &Configured::default());
-        for e in walkdir::WalkDir::new(&workspace).into_iter().flatten() {
-            let p = e.path();
-            if p.extension().is_some_and(|x| x == "md") {
-                let name = p.strip_prefix(&workspace).unwrap().to_string_lossy();
-                let text = std::fs::read_to_string(p).unwrap();
-                differ.extend(difference(&name, &text, &s));
-            }
-        }
-        // The one way they differ: pulldown-cmark took a frontmatter whose first line is blank,
-        // as the Kanban plugin writes it, for a rule and Markdown. The tree reads frontmatter,
-        // as Obsidian does (`a_frontmatter_with_a_blank_first_line_is_frontmatter`).
-        let corpus: Vec<(String, String)> = cst::corpus()
-            .into_iter()
-            .filter(|(_, text)| !text.starts_with("---\n\n"))
-            .collect();
-        for flavour in ["obsidian", "github", "commonmark"] {
-            let s = every_type(flavour);
-            for (name, text) in &corpus {
-                differ.extend(difference(name, text, &s));
-            }
-            for (k, text) in TRICKY.iter().enumerate() {
-                differ.extend(difference(&format!("Tricky {k}.md"), text, &s));
-            }
-        }
-        let s = every_type("obsidian");
-        for text in DIFFERENT {
-            if difference("Different.md", text, &s).is_none() {
-                differ.push(format!("reads alike now, so it isn't DIFFERENT: {text:?}"));
-            }
-        }
-        assert!(
-            differ.is_empty(),
-            "{} read differently:\n{}",
-            differ.len(),
-            differ.join("\n")
-        );
-    }
 
     /// Tasks that are easy to read differently once a task is found by its attributes and not
     /// by its characters.
@@ -1311,63 +1120,5 @@ fields.what = { rest = true }
             summary(&items(text)),
             [s("heading", 8, 8, "To do"), s("task", 10, 10, "[ ] Pack")]
         );
-    }
-
-    /// What reading every note's items costs, pulldown-cmark's pass against the tree's walk,
-    /// with the workspace's types and with none (the pass and the ids alone). Run on
-    /// `scripts/bench-items.py`'s workspace: `COLD_LAVA_BENCH_WS=DIR cargo test --release -p
-    /// cold-lava-engine items_cost -- --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    fn items_cost() {
-        use std::time::{Duration, Instant};
-        let dir = std::env::var("COLD_LAVA_BENCH_WS").expect("COLD_LAVA_BENCH_WS");
-        let root = Path::new(&dir);
-        let none = Configured::default();
-        let typed = Settings::load(root, &none);
-        let plain = Settings::load_with(root, None, &[], types::load(Vec::<types::Layer>::new()));
-        let notes: Vec<(String, String)> = walkdir::WalkDir::new(root)
-            .into_iter()
-            .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
-            .filter_map(|e| {
-                let name = e.path().strip_prefix(root).ok()?;
-                let name = name.to_string_lossy().to_string();
-                Some((name, std::fs::read_to_string(e.path()).ok()?))
-            })
-            .collect();
-        let bytes: usize = notes.iter().map(|n| n.1.len()).sum();
-        type Read = fn(&str, &str, &Settings) -> Vec<Item>;
-        let sides: [(&str, Read, &Settings); 4] = [
-            ("pulldown-cmark, with the types", pulldown::extract, &typed),
-            ("the tree, with the types", extract, &typed),
-            ("pulldown-cmark, no types", pulldown::extract, &plain),
-            ("the tree, no types", extract, &plain),
-        ];
-        let mut runs: Vec<Vec<Duration>> = vec![Vec::new(); sides.len()];
-        let mut items = vec![0usize; sides.len()];
-        // The sides take turns, so drift and caches favour none.
-        for _ in 0..9 {
-            for (k, (_, read, s)) in sides.iter().enumerate() {
-                let t = Instant::now();
-                items[k] = notes
-                    .iter()
-                    .map(|(name, text)| read(name, text, s).len())
-                    .sum();
-                runs[k].push(t.elapsed());
-            }
-        }
-        println!(
-            "items_cost: {} notes, {} KiB; median (min-max) of 9:",
-            notes.len(),
-            bytes / 1024
-        );
-        for (k, (what, ..)) in sides.iter().enumerate() {
-            runs[k].sort();
-            println!(
-                "  {what}: {:?} ({:?}-{:?}), {} items",
-                runs[k][4], runs[k][0], runs[k][8], items[k]
-            );
-        }
     }
 }

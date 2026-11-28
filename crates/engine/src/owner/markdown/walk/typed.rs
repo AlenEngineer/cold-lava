@@ -1,13 +1,14 @@
 //! The types matched over what a walk found: each block some type reads is typed, or holds
 //! inline types, and becomes an item or types the item it already is.
 
-use super::{Lines, Pass, keys};
-use crate::items::{self, Data, Item, Raw, Settings};
+use super::{Lines, Pass, Raw, keys};
+use crate::items::{Data, Settings};
 use crate::markdown::Source;
 use crate::matcher;
 use crate::sources::On;
 
-/// Matches the types over what a pass found, then gives each item its id.
+/// Matches the types over what a pass found: its items, each typed where a type reads it, and
+/// the typed items made of what no item was, before any has an id.
 pub(super) fn finish(
     note: &str,
     text: &str,
@@ -15,7 +16,7 @@ pub(super) fn finish(
     source: &Source,
     lines: &Lines,
     pass: Pass,
-) -> Vec<Item> {
+) -> Vec<Raw> {
     let Pass {
         mut raws,
         mut candidates,
@@ -109,12 +110,8 @@ pub(super) fn finish(
                             parent: c.parent,
                             block_id: c.block_id.clone(),
                             data: Data::Typed(Box::new(typed)),
-                            // An aside is a piece of its own kind: its key is set apart, so
-                            // that it never takes the place, among its type's items with the
-                            // same words, of a paragraph or a row that had an id before
-                            // asides matched.
                             key: match c.on {
-                                On::Aside => format!("aside\u{1f}{key}"),
+                                On::Aside => keys::aside(&key),
                                 _ => key,
                             },
                         });
@@ -165,6 +162,5 @@ pub(super) fn finish(
             }
         }
     }
-    let keys = keys::of(&raws);
-    items::identify(note, text, raws, keys)
+    raws
 }

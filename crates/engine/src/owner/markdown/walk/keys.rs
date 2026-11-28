@@ -2,9 +2,19 @@
 //! heading's path, or a list item's or a typed item's text hashed under the item it is in, then
 //! `.n` for the nth repeat of a kind's anchor. Changing a key moves ids.
 
+use super::Raw;
 use crate::identity;
-use crate::items::{Data, Keys, Raw};
+use crate::items::Data;
 use std::collections::HashMap;
+
+/// Each item's key, as its owner made it, in the order of its items: the key, what its anchor
+/// is made of (the item it is keyed under, whose key the anchor starts with, and what the anchor
+/// has after that key) and whether an anchor was counted twice, so that two items may be twins.
+pub(super) struct Keys {
+    pub(super) keys: Vec<String>,
+    pub(super) anchors: Vec<(Option<usize>, String)>,
+    pub(super) repeated: bool,
+}
 
 /// Each item's key, in document order (a parent before its children).
 pub(super) fn of(raws: &[Raw]) -> Keys {
@@ -55,4 +65,11 @@ fn anchor_of(raw: &Raw) -> (Option<usize>, String) {
         (None, Data::Typed(_)) => (raw.parent, hashed(&raw.key)),
         (None, Data::Block) => (None, String::new()),
     }
+}
+
+/// The key of an aside, set apart from the key `key` its type's fields give: an aside is a
+/// piece of its own kind, so it never takes the place, among its type's items with the same
+/// words, of a paragraph or a row that had an id before asides matched.
+pub(super) fn aside(key: &str) -> String {
+    format!("aside\u{1f}{key}")
 }
