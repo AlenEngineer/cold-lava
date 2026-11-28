@@ -2031,8 +2031,11 @@ impl Home {
                         b.heard(core, &client, &news);
                     }
                 }
-                Next::Edited { answer: Ok(_), .. } => {}
-                Next::Edited { answer: Err(e), .. } => self.flash(format!("not saved: {e}")),
+                Next::Edited { answer, .. } => {
+                    if let Err(e) = *answer {
+                        self.flash(format!("not saved: {e}"));
+                    }
+                }
             }
         }
     }

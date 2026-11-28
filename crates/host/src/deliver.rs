@@ -50,7 +50,7 @@ pub enum Delivery {
     File(FileNews),
     Read(FileRead),
     Edit(FileEdit),
-    Edited(Ticket, Result<Edited, gateway::Error>),
+    Edited(Ticket, Box<Result<Edited, gateway::Error>>),
     Poll,
 }
 
@@ -61,7 +61,7 @@ impl Delivery {
             Delivery::File(news) => extension.file(news, host),
             Delivery::Read(read) => extension.read_file(read, host),
             Delivery::Edit(edit) => extension.edit_file(edit, host),
-            Delivery::Edited(ticket, answer) => extension.edited(ticket, answer, host),
+            Delivery::Edited(ticket, answer) => extension.edited(ticket, *answer, host),
             Delivery::Poll => extension.poll(host),
         }
     }
@@ -78,7 +78,7 @@ pub enum Next {
     Edited {
         by: String,
         ticket: Ticket,
-        answer: Result<Edited, gateway::Error>,
+        answer: Box<Result<Edited, gateway::Error>>,
     },
 }
 
@@ -95,7 +95,7 @@ enum Waiting {
     File(String),
     Read(String, FileRead),
     Edit(String, FileEdit),
-    Edited(String, Ticket, Result<Edited, gateway::Error>),
+    Edited(String, Ticket, Box<Result<Edited, gateway::Error>>),
     Poll(ExtId),
 }
 
@@ -150,7 +150,7 @@ impl Deliveries {
             }
             Step::Edited => {
                 let edited = core.take_edited().into_iter();
-                waiting.extend(edited.map(|(by, t, a)| Waiting::Edited(by, t, a)));
+                waiting.extend(edited.map(|(by, t, a)| Waiting::Edited(by, t, Box::new(a))));
             }
             Step::Polls => waiting.extend(registry.ids().map(Waiting::Poll)),
         }
