@@ -219,11 +219,12 @@ class Extension:
 
     def open_note(self, note, line=None):
         """Open a note in cold-lava (an item's `note`, or a path inside the workspace), at a
-        line. Back returns to where the user was."""
+        line. Back returns to where the user was. Raises `Refused` for a path the gateway
+        refuses (a hidden folder, `..`, a symbolic link, or no file there)."""
         params = {"note": note}
         if line is not None:
             params["line"] = line
-        self.notify("workspace/open", params)
+        self.request("workspace/open", params)
 
     # The wire.
 

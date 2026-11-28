@@ -149,8 +149,8 @@ pub enum Effect {
         rev: String,
         content: Result<Content, String>,
     },
-    /// Open a note, at a line: a path inside the workspace, absolute or relative to its root
-    /// as items name their notes.
+    /// Open a note, at a line: a file inside the workspace, in the gateway's normal spelling
+    /// of a path relative to its root (`Host::open_note` reads it), as items name their notes.
     #[serde(rename = "workspace/open")]
     OpenNote {
         note: PathBuf,

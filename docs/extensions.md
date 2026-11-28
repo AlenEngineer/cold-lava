@@ -3086,7 +3086,7 @@ during the call, and `view/open` names its view at once; the rest are queued.
   `{view}`), `view/update` (`view`, `content`, `select`), `view/close` and `view/show`
   (`view`), and
   `workspace/open` (`note`, `line`, optional `item`);
-  a view over the limits is refused as `refused`. The same methods sent as notifications do the
+  a view over the limits, or a path to open the gateway refuses, is refused as `refused`. The same methods sent as notifications do the
   same and get no answer.
 - **Errors.** A refusal of the workspace gateway is code `-32000` with the refusal as `data`:
   `{"code": -32000, "message": "...", "data": {"reason": "forbidden", "message": "..."}}`. Bad
@@ -3320,8 +3320,8 @@ Extensions can't draw into cold-lava's terminal directly. A view is one of:
   what showed, which Back returns to, as `view/open` does; a view in front already, or not open,
   stays as it is. `workspace/open {note, line}` opens a note (an item's `note`, relative to
   the workspace, or an absolute path inside it, read as `workspace/read` reads one: a hidden
-  folder, `..` or a symlink is refused to the extension as a request is; a path to no file is
-  refused on the status line) at a line, from wherever the user is, which Back returns to; with `item`, an item's id, a file
+  folder, `..`, a symlink or a path to no file is refused to the extension as `refused`) at a
+  line, from wherever the user is, which Back returns to; with `item`, an item's id, a file
   another owner reads opens in its owner at the item's place. Updates and closes of a view the
   extension doesn't have do nothing. The design's `title` and `place` are not there: the
   content has its title, and there is one place, the main area, until a second is needed.

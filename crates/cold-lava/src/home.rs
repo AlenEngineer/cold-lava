@@ -1285,9 +1285,9 @@ impl Home {
         };
     }
 
-    /// `workspace/open`: the note at `note` (inside the workspace, absolute or relative to it),
-    /// at `line`, from where you are. `note` is the gateway's normal spelling of a path inside
-    /// the workspace: the host read it (`Host::open_note`).
+    /// `workspace/open`: the note at `note`, at `line`, from where you are. `note` is the
+    /// gateway's normal spelling of a file's path relative to the workspace: the host read it
+    /// (`Host::open_note`). It is checked again only in case the file went since.
     fn open_for(&mut self, ext: ExtId, note: &Path, line: Option<usize>, item: Option<String>) {
         let Some(root) = self.root.clone() else {
             return;
@@ -1295,9 +1295,8 @@ impl Home {
         if let Some(why) = self.unsaved_in_front() {
             return self.held_back(ext, &format!("open {}", note.display()), why);
         }
-        let rel = rel_path::or_whole(&root, note);
         let owned = (self.core.as_ref())
-            .and_then(|c| (c.index.workspace.owned.iter()).find(|f| f.rel == rel));
+            .and_then(|c| (c.index.workspace.owned.iter()).find(|f| Path::new(&f.rel) == note));
         if let Some(f) = owned {
             let place = item.and_then(|id| f.places.get(&id).cloned());
             let path = f.path.clone();
@@ -1307,7 +1306,7 @@ impl Home {
             }
             return self.open_file_at(&path, place);
         }
-        let path = root.join(&rel);
+        let path = root.join(note);
         if !path.is_file() {
             let name = &self.registry.manifest(ext).name;
             let note = note.display();

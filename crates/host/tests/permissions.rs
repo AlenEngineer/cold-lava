@@ -642,6 +642,7 @@ fn workspace_open_is_refused_a_path_the_gateway_refuses() {
         ".obsidian/graph.json",
         "Concepts/../.git/config",
         "/etc/hostname",
+        "Concepts",
     ] {
         assert_eq!(
             open(&mut r, &mut core, note),

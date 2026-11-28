@@ -1838,9 +1838,8 @@ fn an_extension_cant_open_a_file_in_a_hidden_folder() {
     }
     let dir = sandbox("open-hidden");
     let home = dir.join("home");
-    let push = "    try:\n        \
-                ext.request(\"workspace/open\", {\"note\": \".obsidian/graph.json\"})\n    \
-                except Exception as refused:\n        ext.show(f\"refused: {refused}\")\n";
+    let push = "    try:\n        ext.open_note(\".obsidian/graph.json\")\n    \
+                except Refused as refused:\n        ext.show(f\"refused: {refused}\")\n";
     install_pushy_open_tasks(&dir, &home, push);
     let out = drive_with(
         "open-hidden.drive",

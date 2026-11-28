@@ -928,13 +928,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `workspace/open` reads its path as `workspace/read` does (#451): a hidden folder, `..`
-    /// or a path outside is refused to the extension and nothing is queued, and the frontend
+    /// `workspace/open` reads its path as `workspace/read` does (#451): a hidden folder, `..`,
+    /// a path outside or one to no file is refused to the extension and nothing is queued, and the frontend
     /// is handed the path in its one spelling, so an owned file is found by it.
     #[test]
     fn workspace_open_reads_its_path_as_the_gateway_does() {
         let dir = workspace("open");
         std::fs::write(dir.join(".obsidian/graph.json"), "{}\n").unwrap();
+        std::fs::create_dir(dir.join("Inbox")).unwrap();
         let mut core = Core::open(&dir).unwrap();
         let whole = core.root().join("Plan.md");
         for note in [json!("Plan.md/"), json!("Plan.md"), json!(whole)] {
@@ -952,6 +953,8 @@ mod tests {
             json!(".obsidian/graph.json"),
             json!("Inbox/../Plan.md"),
             json!(outside),
+            json!("Nope.md"),
+            json!("Inbox"),
         ] {
             let (answer, effects) = served(&mut core, &[], "workspace/open", json!({"note": note}));
             let refused = answer.unwrap_err();
