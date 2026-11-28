@@ -380,7 +380,8 @@ impl Core {
     }
 
     /// Tell subscribers of the core's own change, and keep its events for the next `poll`.
-    /// `note_changed_now` hands its events to its caller instead, and `poll` returns its own.
+    /// `broadcast` alone is for the three that don't: `note_changed_now` hands its events to its
+    /// caller, `poll` returns its own, and `rescan_now`'s `Rescanned` goes to channels only.
     fn announce(&mut self, events: Vec<Event>) {
         self.broadcast(&events);
         self.unseen.extend(events);

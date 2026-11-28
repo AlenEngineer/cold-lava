@@ -91,6 +91,16 @@ enum Asked {
     Shape(Box<Ask>),
 }
 
+/// Why a request has no answer.
+enum Failure {
+    /// The extension answered it with an error, this message.
+    Refused(String),
+    /// It wasn't answered within its limit.
+    Late(Duration),
+    /// The extension stopped, for this reason.
+    Stopped(String),
+}
+
 impl Asked {
     fn method(&self) -> &'static str {
         match self {
@@ -100,6 +110,46 @@ impl Asked {
             Asked::Edit { .. } => "file/edit",
             Asked::Preview { .. } => "file/preview",
             Asked::Shape(ask) => ask.method(),
+        }
+    }
+
+    /// How long it may go unanswered.
+    fn limit(&self, t: Timeouts) -> Duration {
+        match self {
+            Asked::Initialize => t.start,
+            _ => t.request,
+        }
+    }
+
+    /// This request of the extension `name` has no answer. A failed `initialize` stops the
+    /// extension: the reason is returned, for `fail`. A failed command is said on the status
+    /// line, and whoever waits on any other request is answered.
+    fn failed(self, host: &mut Host<'_>, name: &str, failure: Failure) -> Option<String> {
+        let late = |method: &str, after: Duration| {
+            format!("it didn't answer {method} in {} s", after.as_secs_f32())
+        };
+        match (self, failure) {
+            (Asked::Initialize, Failure::Refused(m)) => Some(format!("it refused initialize: {m}")),
+            (Asked::Initialize, Failure::Late(after)) => Some(late("initialize", after)),
+            (Asked::Command(_), Failure::Refused(m)) => {
+                host.notify(format!("{name}: {m}"));
+                None
+            }
+            (Asked::Command(command), Failure::Late(after)) => {
+                let secs = after.as_secs_f32();
+                host.notify(format!("{name} didn't answer {command} in {secs} s"));
+                None
+            }
+            (Asked::Initialize | Asked::Command(_), Failure::Stopped(_)) => None,
+            (asked, failure) => {
+                let why = match failure {
+                    Failure::Refused(m) => m,
+                    Failure::Late(after) => late(asked.method(), after),
+                    Failure::Stopped(why) => format!("it stopped: {why}"),
+                };
+                asked.answer(host, Err(why));
+                None
+            }
         }
     }
 
@@ -208,9 +258,6 @@ impl Process {
         for sub in live.subscriptions {
             let _ = host.unsubscribe_items(sub);
         }
-        for (asked, _) in live.waiting.into_values() {
-            asked.answer(host, Err(format!("it stopped: {why}")));
-        }
         let last = (self.launch.log.as_ref())
             .and_then(|log| std::fs::read_to_string(log).ok())
             .and_then(|text| {
@@ -221,6 +268,10 @@ impl Process {
             Some(last) => format!("{why}: {last}"),
             None => why,
         };
+        let name = &self.manifest.name;
+        for (asked, _) in live.waiting.into_values() {
+            asked.failed(host, name, Failure::Stopped(why.clone()));
+        }
         host.status(None);
         host.notify(format!("{} stopped: {why}", self.manifest.name));
         self.state = State::Stopped(why);
@@ -233,14 +284,12 @@ impl Process {
         let Some((asked, _)) = id.as_u64().and_then(|id| live.waiting.remove(&id)) else {
             return;
         };
-        match (asked, outcome) {
-            (Asked::Initialize, Err(e)) => {
-                self.fail(host, format!("it refused initialize: {}", e.message))
-            }
-            (Asked::Command(_), Err(e)) => {
-                host.notify(format!("{}: {}", self.manifest.name, e.message))
-            }
-            (asked, outcome) => asked.answer(host, outcome.map_err(|e| e.message)),
+        let refused = match outcome {
+            Ok(answer) => return asked.answer(host, Ok(answer)),
+            Err(e) => Failure::Refused(e.message),
+        };
+        if let Some(why) = asked.failed(host, &self.manifest.name, refused) {
+            self.fail(host, why);
         }
     }
 
@@ -251,17 +300,7 @@ impl Process {
         };
         let t = self.timeouts;
         let late: Vec<u64> = (live.waiting.iter())
-            .filter(|(_, (asked, sent))| {
-                let limit = match asked {
-                    Asked::Initialize => t.start,
-                    Asked::Command(_)
-                    | Asked::Read { .. }
-                    | Asked::Edit { .. }
-                    | Asked::Preview { .. }
-                    | Asked::Shape(_) => t.request,
-                };
-                sent.elapsed() > limit
-            })
+            .filter(|(_, (asked, sent))| sent.elapsed() > asked.limit(t))
             .map(|(id, _)| *id)
             .collect();
         let name = &self.manifest.name;
@@ -269,20 +308,9 @@ impl Process {
             let Some((asked, _)) = live.waiting.remove(&id) else {
                 continue;
             };
-            match asked {
-                Asked::Initialize => {
-                    let secs = t.start.as_secs_f32();
-                    return self.fail(host, format!("it didn't answer initialize in {secs} s"));
-                }
-                Asked::Command(command) => {
-                    let secs = t.request.as_secs_f32();
-                    host.notify(format!("{name} didn't answer {command} in {secs} s"));
-                }
-                asked => {
-                    let secs = t.request.as_secs_f32();
-                    let why = format!("it didn't answer {} in {secs} s", asked.method());
-                    asked.answer(host, Err(why));
-                }
+            let late = Failure::Late(asked.limit(t));
+            if let Some(why) = asked.failed(host, name, late) {
+                return self.fail(host, why);
             }
         }
     }
@@ -1058,7 +1086,8 @@ mod tests {
     }
 
     /// D3 (#267): a shape question is answered when the extension stops before answering it,
-    /// as when it doesn't answer in time, so the region doesn't wait on it for good.
+    /// as when it doesn't answer in time, so the region doesn't wait on it for good. The
+    /// answer says why as the notice does, with the last line of its log.
     #[test]
     fn a_crash_answers_the_shape_question_it_left_waiting() {
         static CRASH: Scripted = Scripted(|m| match m["method"].as_str() {
@@ -1067,8 +1096,10 @@ mod tests {
             _ => Some(Vec::new()),
         });
         let dir = workspace("shape-crash");
+        let log = dir.join("fake.log");
+        std::fs::write(&log, "Traceback: ZeroDivisionError\n").unwrap();
         let mut core = Core::open(&dir).unwrap();
-        let mut r = scripted(&CRASH, &dir, None);
+        let mut r = scripted(&CRASH, &dir, Some(log));
         r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
         let ask = Ask::Region {
             placed: 1,
@@ -1083,8 +1114,12 @@ mod tests {
         let answers: Vec<_> = (core.take_shape_answers(&shapes).into_iter())
             .map(|a| (a.ask.method(), a.answer))
             .collect();
-        let why = "it stopped: it exited with status 1";
-        assert_eq!(answers, [("shape/region", Err(why.into()))]);
+        let why = "it stopped: it exited with status 1: Traceback: ZeroDivisionError";
+        assert_eq!(
+            answers,
+            [("shape/region", Err(why.into()))],
+            "with its log's last line"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
