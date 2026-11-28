@@ -335,6 +335,7 @@ mod tests {
         Index::build(
             crate::workspace::scan(
                 &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+                Default::default(),
             )
             .unwrap(),
         )

@@ -1,6 +1,7 @@
 //! Scans a workspace (an Obsidian vault or any folder of notes): finds notes and extracts their
 //! links and tags.
 
+use crate::configured::Configured;
 use crate::items::{self, Item};
 use crate::owner::markdown;
 use anyhow::{Context, Result};
@@ -8,7 +9,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use walkdir::WalkDir;
 
 /// Text normalised for searching: lowercase, without accents or Hawaiian ʻokina,
@@ -151,6 +152,8 @@ pub struct Workspace {
     /// Files other owners read, by `rel`: canvases from the scan (the engine's own owner), the
     /// extensions' kinds once the core knows them (`Core::set_owners`).
     pub owned: Vec<Owned>,
+    /// What the frontend configured, which the item settings and the style are read with.
+    pub configured: Arc<Configured>,
     /// What items depend on (flavour, Tasks and daily-note settings), read on first use.
     pub item_settings: OnceLock<items::Settings>,
 }
@@ -267,7 +270,8 @@ pub fn first_link<'a>(root: &Path, rel: &'a str) -> std::io::Result<Option<&'a s
     Ok(None)
 }
 
-pub fn scan(root: &Path) -> Result<Workspace> {
+/// The workspace at `root`, read with what the frontend `configured`.
+pub fn scan(root: &Path, configured: Arc<Configured>) -> Result<Workspace> {
     let root = root
         .canonicalize()
         .with_context(|| format!("workspace path not found: {}", root.display()))?;
@@ -284,6 +288,7 @@ pub fn scan(root: &Path) -> Result<Workspace> {
         name,
         notes,
         owned: Vec::new(),
+        configured,
         item_settings: OnceLock::new(),
     };
     workspace.owned = built_in_owned(&workspace);
@@ -327,7 +332,7 @@ pub enum NoteChange {
 impl Workspace {
     pub fn item_settings(&self) -> &items::Settings {
         self.item_settings
-            .get_or_init(|| items::Settings::load(&self.root))
+            .get_or_init(|| items::Settings::load(&self.root, &self.configured))
     }
 
     /// How the workspace is written: its notes' majority, then Obsidian's settings and the
@@ -336,7 +341,7 @@ impl Workspace {
     pub fn style(&self) -> crate::style::Style {
         let counts = (self.notes.iter())
             .map(|n| (n.style).get_or_init(|| crate::style::count_with(&n.text, n.links_written)));
-        crate::style::Style::of(&self.root, counts)
+        crate::style::Style::of(&self.root, &self.configured.style, counts)
     }
 
     /// The note's items, read the first time they're asked for.
@@ -607,7 +612,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("Todo.md"), "- [ ] one\n").unwrap();
-        let mut v = scan(&dir).unwrap();
+        let mut v = scan(&dir, Default::default()).unwrap();
         assert!(
             v.item_settings.get().is_none() && v.notes[0].items.get().is_none(),
             "scanning reads no items"
@@ -633,7 +638,7 @@ mod tests {
         fs::write(real.join("A.md"), "one").unwrap();
         let link = base.join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        let mut v = scan(&link).unwrap();
+        let mut v = scan(&link, Default::default()).unwrap();
         fs::write(link.join("A.md"), "two").unwrap();
         assert_eq!(
             v.refresh_path(&link.join("A.md")),
@@ -655,8 +660,8 @@ mod tests {
 
     #[test]
     fn scans_example_workspace() {
-        let v =
-            scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace")).unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
+        let v = scan(&root, Default::default()).unwrap();
         assert_eq!(v.name, "example-workspace");
         assert_eq!(v.notes.len(), 35);
         // Hidden folders (.obsidian) are skipped; subfolders and non-ASCII names are included.

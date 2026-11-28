@@ -204,6 +204,7 @@ mod tests {
         Index::build(
             crate::workspace::scan(
                 &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+                Default::default(),
             )
             .unwrap(),
         )
@@ -240,7 +241,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("A.md"), "links to [[B]]").unwrap();
         std::fs::write(dir.join("B.md"), "nothing").unwrap();
-        let mut ix = Index::build(crate::workspace::scan(&dir).unwrap());
+        let mut ix = Index::build(crate::workspace::scan(&dir, Default::default()).unwrap());
         let root = ix.workspace.root.clone();
         let b = |ix: &Index| ix.by_rel("B").unwrap();
         assert_eq!(ix.backlinks(b(&ix)).len(), 1);

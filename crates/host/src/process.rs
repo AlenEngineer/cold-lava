@@ -838,7 +838,7 @@ mod tests {
     fn an_extension_that_doesnt_answer_initialize_is_stopped_once() {
         static HUNG: Scripted = Scripted(|_| Some(Vec::new()));
         let dir = workspace("hung");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut r = scripted(&HUNG, &dir, None);
         r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
         assert!(r.running(ExtId(0)));
@@ -883,7 +883,7 @@ mod tests {
             })
         });
         let dir = workspace("previews");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut installed = installed(dir.clone(), None);
         installed.manifest.file_types = vec![crate::FileType {
             extension: "csv".into(),
@@ -959,7 +959,7 @@ mod tests {
             )
         });
         let dir = workspace("shapes");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut r = scripted(&SHAPES, &dir, None);
         r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
         let data = crate::act::InputData {
@@ -1027,7 +1027,7 @@ mod tests {
             })
         });
         let dir = workspace("slow");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut r = scripted(&SLOW, &dir, None);
         r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
         r.call(ExtId(0), Some(&mut core), |e, h| {
@@ -1060,7 +1060,7 @@ mod tests {
         let dir = workspace("crash");
         let log = dir.join("fake.log");
         std::fs::write(&log, "starting\nTraceback: ZeroDivisionError\n\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut r = scripted(&CRASH, &dir, Some(log));
         r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
         let effects = poll_for(&mut r, &mut core, Duration::from_millis(50));
@@ -1098,7 +1098,7 @@ mod tests {
         let dir = workspace("shape-crash");
         let log = dir.join("fake.log");
         std::fs::write(&log, "Traceback: ZeroDivisionError\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut r = scripted(&CRASH, &dir, Some(log));
         r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
         let ask = Ask::Region {
@@ -1175,7 +1175,7 @@ mod tests {
         }];
         let p = Process::with(owner, &OWNER, QUICK);
         let mut r = Registry::new(vec![Box::new(p)]);
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
         core.set_owners(r.owned_kinds(), None);
         // What the menu does each frame: poll, ask the owner, hand out the answers.
@@ -1315,7 +1315,7 @@ mod tests {
         let pinned = vec!["env".to_string(), format!("COLD_LAVA_TODAY={TODAY}")];
         installed.launch.run = [pinned, installed.launch.run].concat();
         let r = Registry::new(vec![Box::new(Process::new(installed).unwrap())]);
-        let core = Core::open(&root).unwrap();
+        let core = Core::open(&root, Default::default()).unwrap();
         (r, core, root, dir)
     }
 

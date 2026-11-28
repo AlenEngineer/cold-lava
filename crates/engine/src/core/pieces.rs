@@ -152,7 +152,7 @@ fn open_with(name: &str, tasks: Option<Json>) -> Core {
         std::fs::write(plugin.join("data.json"), tasks.to_string()).unwrap();
     }
     std::fs::write(dir.join("Home.chores"), HOME).unwrap();
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let kind = OwnedKind {
         extension: "chores".into(),
         owner: OWNER.into(),
@@ -488,7 +488,7 @@ fn a_rename_repoints_the_links_a_piece_says() {
     std::fs::write(dir.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
     let chores = "trip | todo | | Pack for >Krakatoa and [[Krakatoa]]\n";
     std::fs::write(dir.join("Home.chores"), chores).unwrap();
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let kind = OwnedKind {
         extension: "chores".into(),
         owner: OWNER.into(),
@@ -544,7 +544,7 @@ fn a_typed_task_an_owner_gave_is_ticked_as_a_field() {
             .unwrap()
     };
     std::fs::write(dir.join("Plants.list"), file(" ")).unwrap();
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let kind = OwnedKind {
         extension: "list".into(),
         owner: "lists".into(),
@@ -657,7 +657,7 @@ fn an_anchor_on_a_piece_or_a_typed_item_is_refused_before_the_owner_is_asked() {
     std::fs::create_dir_all(&dir).unwrap();
     let file = " ;Water the plants\n";
     std::fs::write(dir.join("Plants.list"), file).unwrap();
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let kind = OwnedKind {
         extension: "list".into(),
         owner: "lists".into(),

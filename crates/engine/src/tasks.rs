@@ -6,6 +6,7 @@
 //! the plugin does, by the plugin's settings (`tasks_settings.rs`: global filter, statuses, "set
 //! done date", "next recurrence on the line below"): done dates, recurrence and status cycles.
 
+use crate::configured::Configured;
 use crate::daily;
 use crate::identity::line_id;
 use crate::items::{self, Data, Item};
@@ -325,12 +326,14 @@ impl std::error::Error for Changed {}
 /// is in.
 pub fn toggle(
     path: &Path,
+    configured: &Configured,
     line: usize,
     expect_id: Option<&str>,
     today: NaiveDate,
 ) -> Result<Toggled> {
     toggle_in(
         &crate::workspace::find_workspace_root(path),
+        configured,
         path,
         line,
         expect_id,
@@ -338,9 +341,11 @@ pub fn toggle(
     )
 }
 
-/// [`toggle`] in a workspace already found (`workspace::locate_workspace`).
+/// [`toggle`] in a workspace already found (`workspace::locate_workspace`), read with what the
+/// frontend `configured`.
 pub fn toggle_in(
     root: &Path,
+    configured: &Configured,
     path: &Path,
     line: usize,
     expect_id: Option<&str>,
@@ -350,8 +355,8 @@ pub fn toggle_in(
     let path = path
         .canonicalize()
         .with_context(|| format!("no such file: {}", path.display()))?;
-    let item_settings = items::Settings::load(&root);
-    let style = crate::style::Lazy::new(|| crate::style::Style::of_root(&root));
+    let item_settings = items::Settings::load(&root, configured);
+    let style = crate::style::Lazy::new(|| crate::style::Style::of_root(&root, &configured.style));
     let rel = path
         .strip_prefix(&root)
         .unwrap_or(&path)
@@ -861,22 +866,25 @@ mod tests {
         std::fs::write(&f, "# Todo\n- [ ] Pay rent 📅 2026-11-07\n").unwrap();
         let id = line_id("- [ ] Pay rent 📅 2026-11-07");
         let today = d("2026-11-05");
-        let r = toggle(&f, 2, Some(&id), today).unwrap();
+        let r = toggle(&f, &Default::default(), 2, Some(&id), today).unwrap();
         assert_eq!(r.status, "done");
         assert_eq!(
             std::fs::read_to_string(&f).unwrap(),
             "# Todo\n- [x] Pay rent 📅 2026-11-07 ✅ 2026-11-05\n"
         );
         // The old id no longer matches: refuse.
-        let err = toggle(&f, 2, Some(&id), today).unwrap_err();
+        let err = toggle(&f, &Default::default(), 2, Some(&id), today).unwrap_err();
         assert!(err.downcast_ref::<Changed>().is_some());
         // Toggle back with the new id.
-        toggle(&f, 2, Some(&r.id), today).unwrap();
+        toggle(&f, &Default::default(), 2, Some(&r.id), today).unwrap();
         assert_eq!(
             std::fs::read_to_string(&f).unwrap(),
             "# Todo\n- [ ] Pay rent 📅 2026-11-07\n"
         );
-        assert!(toggle(&f, 1, None, today).is_err(), "headings aren't tasks");
+        assert!(
+            toggle(&f, &Default::default(), 1, None, today).is_err(),
+            "headings aren't tasks"
+        );
         let _ = std::fs::remove_dir_all(&v);
     }
 
@@ -885,7 +893,14 @@ mod tests {
         let v = temp_workspace("callout");
         let f = v.join("Plan.md");
         std::fs::write(&f, "> [!todo] This week\n> - [ ] Pack boots\n").unwrap();
-        let r = toggle(&f, 2, Some(&line_id("> - [ ] Pack boots")), d("2026-11-05")).unwrap();
+        let r = toggle(
+            &f,
+            &Default::default(),
+            2,
+            Some(&line_id("> - [ ] Pack boots")),
+            d("2026-11-05"),
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read_to_string(&f).unwrap(),
             "> [!todo] This week\n> - [x] Pack boots ✅ 2026-11-05\n"
@@ -1019,7 +1034,7 @@ mod tests {
         // its continuation: the done task would lose `^rent` to it.
         let open = "- [ ] Rent 🔁 every month 📅 2026-11-01\n  paid by card ^rent\n";
         std::fs::write(&f, open).unwrap();
-        let err = toggle(&f, 1, None, d("2026-11-02")).unwrap_err();
+        let err = toggle(&f, &Default::default(), 1, None, d("2026-11-02")).unwrap_err();
         assert_eq!(
             format!("{err:#}"),
             "^rent is on a later line of this task, and the next occurrence, which goes right \
@@ -1034,7 +1049,7 @@ mod tests {
         );
 
         std::fs::write(&f, "- [ ] Rent 🔁 every month 📅 2026-11-01 ^rent\n").unwrap();
-        toggle(&f, 1, None, d("2026-11-02")).unwrap();
+        toggle(&f, &Default::default(), 1, None, d("2026-11-02")).unwrap();
         assert_eq!(
             std::fs::read_to_string(&f).unwrap(),
             "- [x] Rent 🔁 every month 📅 2026-11-01 ✅ 2026-11-02 ^rent\n\
@@ -1052,7 +1067,7 @@ mod tests {
         // occurrence is that line alone, which would read `^x` as a new anchor.
         let open = "- [ ] Rent 🔁 every month 📅 2026-11-01 ^x\n  paid by card\n";
         std::fs::write(&f, open).unwrap();
-        let err = toggle(&f, 1, None, d("2026-11-02")).unwrap_err();
+        let err = toggle(&f, &Default::default(), 1, None, d("2026-11-02")).unwrap_err();
         assert_eq!(
             format!("{err:#}"),
             "the next occurrence would be a copy of the task's first line, which ends in ^x, \
@@ -1094,7 +1109,7 @@ mod tests {
             "- [ ] Rent 🔁 every month 📅 2026-11-01 ⏳ 2026-10-28\n",
         )
         .unwrap();
-        let r = toggle(&f, 1, None, d("2026-11-02")).unwrap();
+        let r = toggle(&f, &Default::default(), 1, None, d("2026-11-02")).unwrap();
         let text = std::fs::read_to_string(&f).unwrap();
         assert_eq!(
             text,
@@ -1122,7 +1137,7 @@ mod tests {
         let today = d("2026-11-05");
         let steps: Vec<(&str, String)> = (0..3)
             .map(|_| {
-                let r = toggle(&f, 1, None, today).unwrap();
+                let r = toggle(&f, &Default::default(), 1, None, today).unwrap();
                 (r.status, std::fs::read_to_string(&f).unwrap())
             })
             .collect();
@@ -1153,21 +1168,21 @@ mod tests {
         let f = v.join("Plan.md");
         std::fs::write(&f, "- [x] Hike 📅 2026-11-07 ✅ 2026-11-04\n").unwrap();
         let today = d("2026-11-05");
-        let r = toggle(&f, 1, None, today).unwrap();
+        let r = toggle(&f, &Default::default(), 1, None, today).unwrap();
         assert_eq!(r.status, "cancelled");
         assert_eq!(
             std::fs::read_to_string(&f).unwrap(),
             "- [-] Hike 📅 2026-11-07 ❌ 2026-11-05\n",
             "the done date goes, the cancelled date comes"
         );
-        toggle(&f, 1, None, today).unwrap();
+        toggle(&f, &Default::default(), 1, None, today).unwrap();
         assert_eq!(
             std::fs::read_to_string(&f).unwrap(),
             "- [ ] Hike 📅 2026-11-07\n"
         );
         std::fs::write(&data, format!("{statuses}, \"setCancelledDate\": false}}")).unwrap();
         std::fs::write(&f, "- [x] Hike [completion:: 2026-11-04]\n").unwrap();
-        toggle(&f, 1, None, today).unwrap();
+        toggle(&f, &Default::default(), 1, None, today).unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "- [-] Hike\n");
         let _ = std::fs::remove_dir_all(&v);
     }
@@ -1188,7 +1203,7 @@ mod tests {
         .unwrap();
         std::fs::write(v.join("Projects.md"), "- [ ] Ship it 📅 2026-11-20\n- [ ] Someday\n```\n- [ ] in code 📅 2026-11-20\n```\n- [ ] Next month 📅 2026-12-02\n").unwrap();
         let a = agenda(
-            &crate::workspace::scan(&v).unwrap(),
+            &crate::workspace::scan(&v, Default::default()).unwrap(),
             d("2026-11-01"),
             d("2026-11-30"),
         );
@@ -1244,14 +1259,21 @@ mod tests {
         .unwrap();
         let f = v.join("Ideas.md");
         std::fs::write(&f, format!("{line}\n- [ ] Pay rent 📅 2026-11-12\n")).unwrap();
-        let workspace = crate::workspace::scan(&v).unwrap();
+        let workspace = crate::workspace::scan(&v, Default::default()).unwrap();
         let errors = &workspace.item_settings().types.errors;
         assert!(errors.is_empty(), "{errors:?}");
         let a = agenda(&workspace, d("2026-11-01"), d("2026-11-30"));
         let texts: Vec<&str> = a.tasks.iter().map(|t| t.text.as_str()).collect();
         assert_eq!(texts.len(), 2, "{texts:?}");
         assert!(texts[0].starts_with("Glass from sand"), "{texts:?}");
-        toggle(&f, 1, Some(&a.tasks[0].id), d("2026-11-05")).unwrap();
+        toggle(
+            &f,
+            &Default::default(),
+            1,
+            Some(&a.tasks[0].id),
+            d("2026-11-05"),
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read_to_string(&f).unwrap(),
             "- [x] Glass from sand #idea 📅 2026-11-12 ✅ 2026-11-05\n- [ ] Pay rent 📅 2026-11-12\n"

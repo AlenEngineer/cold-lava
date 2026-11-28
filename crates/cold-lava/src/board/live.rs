@@ -464,7 +464,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let tally: toml::Table = toml::from_str(
             r#"
             inputs = ["a"]

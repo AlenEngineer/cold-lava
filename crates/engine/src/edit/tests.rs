@@ -724,7 +724,7 @@ fn set_field_writes_only_when_the_file_is_as_read() {
     )
     .unwrap();
     std::fs::write(dir.join("VEI.md"), TABLE).unwrap();
-    let s = Settings::load(&dir);
+    let s = Settings::load(&dir, &Default::default());
     assert!(s.types.errors.is_empty(), "{:?}", s.types.errors);
     let row = extract("VEI.md", TABLE, &s)[1].clone();
     let req = SetField {
@@ -733,14 +733,17 @@ fn set_field_writes_only_when_the_file_is_as_read() {
         field: "example",
         value: json!("Pinatubo"),
     };
-    let dry = set_field(&dir, "VEI.md", &req, true).unwrap();
+    let dry = set_field(&dir, &Default::default(), "VEI.md", &req, true).unwrap();
     assert!(dry.changed);
     assert_eq!(std::fs::read_to_string(dir.join("VEI.md")).unwrap(), TABLE);
-    set_field(&dir, "VEI.md", &req, false).unwrap();
+    set_field(&dir, &Default::default(), "VEI.md", &req, false).unwrap();
     let now = std::fs::read_to_string(dir.join("VEI.md")).unwrap();
     assert_eq!(now, dry.text);
     assert!(
-        matches!(set_field(&dir, "VEI.md", &req, false), Err(Changed(_))),
+        matches!(
+            set_field(&dir, &Default::default(), "VEI.md", &req, false),
+            Err(Changed(_))
+        ),
         "the row's rev is stale now"
     );
     std::fs::remove_dir_all(&dir).unwrap();

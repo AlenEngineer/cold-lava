@@ -404,7 +404,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
-        let ix = Index::build(workspace::scan(&dir.join("workspace")).unwrap());
+        let ix = Index::build(workspace::scan(&dir.join("workspace"), Default::default()).unwrap());
         (dir, ix)
     }
 
@@ -523,7 +523,7 @@ mod tests {
         assert_eq!(m.target_edit.links, 1);
         assert_eq!(m.own_links, 1, "./Sib, relative to the source's folder");
         assert!(apply(&m, None).is_err(), "not before the canvas's owner");
-        let mut core = crate::core::Core::open(&ix.workspace.root).unwrap();
+        let mut core = crate::core::Core::open(&ix.workspace.root, Default::default()).unwrap();
         let made = core.apply(&mut m);
         let at_once = matches!(&made, crate::core::Applying::Now(Ok(_)));
         assert!(at_once, "it answers at once: {made:?}");

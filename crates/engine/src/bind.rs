@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn a_venn_bound_to_two_queries_shows_what_they_share() {
         let dir = workspace("venn");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let shapes = built_in();
         let bound = sources(&[
             ("a", "type=volcano tag=ring-of-fire title=\"Ring of Fire\""),
@@ -701,7 +701,7 @@ mod tests {
     #[test]
     fn an_edited_item_changes_what_the_regions_show() {
         let dir = workspace("live");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let shapes = built_in();
         let bound = sources(&[
             ("a", "type=volcano tag=ring-of-fire"),
@@ -744,7 +744,7 @@ mod tests {
     #[test]
     fn a_card_shows_its_note_and_follows_it() {
         let dir = workspace("card");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let shapes = built_in();
         let mut b = Binding::new(
             &mut core,
@@ -769,7 +769,7 @@ mod tests {
     #[test]
     fn ring_of_fire_against_vei_6_and_up() {
         let dir = workspace("vei");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let shapes = built_in();
         let bound = sources(&[
             ("a", "type=volcano tag=ring-of-fire"),
@@ -797,7 +797,7 @@ mod tests {
     #[test]
     fn placeholders_name_the_input_and_its_field() {
         let dir = workspace("fill");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let shapes = built_in();
         let b = Binding::new(
             &mut core,
@@ -825,7 +825,7 @@ mod tests {
     #[test]
     fn binding_mistakes_are_one_line() {
         let dir = workspace("wrong");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let shapes = built_in();
         let mut e = |shape: &str, pairs: &[(&str, &str)]| {
             Binding::new(&mut core, &shapes, shape, sources(pairs)).unwrap_err()

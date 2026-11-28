@@ -16,6 +16,7 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::Value as Json;
 
+use crate::configured::Configured;
 use crate::frontmatter;
 use crate::items::{self, Data, Item, Settings};
 use crate::matcher::{self, Typed};
@@ -85,13 +86,19 @@ pub struct Set {
 
 /// `set_field` on the note at workspace-relative `note` in `root`, written over the text it read
 /// unless `dry_run`. New text follows the workspace's style, counted from its notes when the
-/// edit adds text that needs it.
-pub fn set_field(root: &Path, note: &str, req: &SetField, dry_run: bool) -> Result<Set, EditError> {
+/// edit adds text that needs it. The workspace is read with what the frontend `configured`.
+pub fn set_field(
+    root: &Path,
+    configured: &Configured,
+    note: &str,
+    req: &SetField,
+    dry_run: bool,
+) -> Result<Set, EditError> {
     let path = root.join(note);
     let text = std::fs::read_to_string(&path)
         .map_err(|e| EditError::Io(format!("{}: {e}", path.display())))?;
-    let style = Lazy::new(|| Style::of_root(root));
-    let set = plan(note, &text, &Settings::load(root), &style, req)?;
+    let style = Lazy::new(|| Style::of_root(root, &configured.style));
+    let set = plan(note, &text, &Settings::load(root, configured), &style, req)?;
     if set.changed && !dry_run {
         let seen = crate::read::Seen::kept(&path, text.as_bytes());
         seen.replace(set.text.as_bytes())

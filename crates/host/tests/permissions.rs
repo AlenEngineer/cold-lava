@@ -112,7 +112,7 @@ struct Rescheduled {
 
 fn reschedule(name: &str, permissions: &str) -> Rescheduled {
     let (dir, root) = workspace(name);
-    let mut core = Core::open(&root).unwrap();
+    let mut core = Core::open(&root, Default::default()).unwrap();
     let mut r = open_tasks(&dir, permissions);
     r.call(ExtId(0), Some(&mut core), |e, h| {
         e.workspace(Some(&root), h)
@@ -237,7 +237,7 @@ fn quiet(
 /// A core on `root` whose system trash is `dir/trash`, under the test's own folder, never the
 /// user's.
 fn core_with_trash(dir: &Path, root: &Path) -> Core {
-    let mut core = Core::open(root).unwrap();
+    let mut core = Core::open(root, Default::default()).unwrap();
     core.set_system_trash(Some(Bin::Freedesktop(dir.join("trash"))));
     core
 }
@@ -258,7 +258,7 @@ fn ask<T>(
 fn a_write_needs_files_write_and_an_owner_writes_only_its_own_kind() {
     use Permission::{FilesRead, FilesWrite, ItemsEdit, ItemsRead};
     let (dir, root) = workspace("files");
-    let mut core = Core::open(&root).unwrap();
+    let mut core = Core::open(&root, Default::default()).unwrap();
     let mut r = Registry::new(vec![
         quiet("sheets", &[], &["csv"]),
         quiet("items", &[ItemsRead, ItemsEdit], &[]),
@@ -591,7 +591,7 @@ fn no_permission_reaches_through_a_symlink() {
     let (dir, root) = workspace("links");
     std::fs::create_dir_all(root.join(".git")).unwrap();
     std::fs::write(root.join(".git/config"), "[core]\n\tbare = false\n").unwrap();
-    let mut core = Core::open(&root).unwrap();
+    let mut core = Core::open(&root, Default::default()).unwrap();
     let mut r = Registry::new(vec![
         quiet("probe", &[], &["probe"]),
         quiet("write", &[FilesRead, FilesWrite], &[]),
@@ -630,7 +630,7 @@ fn workspace_open_is_refused_a_path_the_gateway_refuses() {
     let (dir, root) = workspace("open");
     std::fs::create_dir_all(root.join(".git")).unwrap();
     std::fs::write(root.join(".git/config"), "[core]\n\tbare = false\n").unwrap();
-    let mut core = Core::open(&root).unwrap();
+    let mut core = Core::open(&root, Default::default()).unwrap();
     let mut r = Registry::new(vec![quiet("reader", &[FilesRead], &[])]);
     let reader = ExtId(0);
     let open = |r: &mut Registry, core: &mut Core, note: &str| {

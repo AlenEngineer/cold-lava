@@ -524,13 +524,6 @@ impl Overrides {
     }
 }
 
-static CONFIGURED: OnceLock<Overrides> = OnceLock::new();
-
-/// `[style]` from config.toml, which the binary reads (the engine never does).
-pub fn set_configured(overrides: Overrides) {
-    let _ = CONFIGURED.set(overrides);
-}
-
 /// A style worked out the first time it is asked for, so a command that writes one note counts
 /// the workspace's notes only when it adds text that needs them.
 pub struct Lazy<'a> {
@@ -660,13 +653,16 @@ impl Style {
     }
 
     /// The style of the workspace at `root` from its notes' counts: their majority, then
-    /// Obsidian's settings, then config.toml's `[style]`, then `.cold-lava/style.toml`.
-    pub fn of<'a>(root: &Path, notes: impl IntoIterator<Item = &'a Counts>) -> Style {
+    /// Obsidian's settings, then config.toml's `[style]` (`configured`, as the frontend
+    /// handed it in), then `.cold-lava/style.toml`.
+    pub fn of<'a>(
+        root: &Path,
+        configured: &Overrides,
+        notes: impl IntoIterator<Item = &'a Counts>,
+    ) -> Style {
         let mut s = Style::from_tally(&Tally::of(notes));
         s.obsidian(root);
-        if let Some(o) = CONFIGURED.get() {
-            s.apply(o, Origin::Config);
-        }
+        s.apply(configured, Origin::Config);
         match std::fs::read_to_string(root.join(WORKSPACE_FILE)) {
             Ok(text) => match Overrides::parse(&text) {
                 Ok(o) => s.apply(&o, Origin::Workspace),
@@ -683,12 +679,12 @@ impl Style {
 
     /// The style of the workspace at `root`, reading its notes for it alone: for a command that
     /// writes one note and doesn't scan the workspace.
-    pub fn of_root(root: &Path) -> Style {
+    pub fn of_root(root: &Path, configured: &Overrides) -> Style {
         let counts: Vec<Counts> = crate::workspace::note_paths(root)
             .filter_map(|p| std::fs::read_to_string(p).ok())
             .map(|text| count(&text))
             .collect();
-        Style::of(root, &counts)
+        Style::of(root, configured, &counts)
     }
 
     /// Obsidian's settings where the workspace has them: `useMarkdownLinks` and `newLinkFormat`
@@ -832,7 +828,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".obsidian/plugins/obsidian-tasks-plugin")).unwrap();
         std::fs::create_dir_all(dir.join(".cold-lava")).unwrap();
         let counts = [count("* [ ] a [due:: 2026-11-12]\n[x](x.md)\n")];
-        let s = Style::of(&dir, &counts);
+        let s = Style::of(&dir, &Overrides::default(), &counts);
         assert_eq!(s.links.value, LinkSyntax::Markdown);
         assert_eq!(s.task_fields.value, TaskFields::Dataview);
         std::fs::write(
@@ -850,7 +846,7 @@ mod tests {
             "list-marker = \"+\"\nfrontmatter-lists = \"flow\"\n",
         )
         .unwrap();
-        let s = Style::of(&dir, &counts);
+        let s = Style::of(&dir, &Overrides::default(), &counts);
         assert_eq!(
             (s.links.value, s.links.from),
             (LinkSyntax::Wiki, Origin::Obsidian("useMarkdownLinks"))
@@ -863,7 +859,7 @@ mod tests {
         );
         assert_eq!(s.frontmatter_lists.value, Lists::Flow);
         std::fs::write(dir.join(WORKSPACE_FILE), "list-marker = \"x\"\n").unwrap();
-        let s = Style::of(&dir, &counts);
+        let s = Style::of(&dir, &Overrides::default(), &counts);
         assert_eq!(s.list_marker.value, Marker::Star, "a mistake is skipped");
         assert_eq!(s.errors.len(), 1, "{:?}", s.errors);
         let _ = std::fs::remove_dir_all(&dir);

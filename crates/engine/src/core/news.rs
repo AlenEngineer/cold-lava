@@ -195,7 +195,7 @@ impl Harness {
     }
 
     fn open(dir: PathBuf) -> Harness {
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         // The harness is the watcher from here on: the core hears of a file only when a test
         // says so (`saw`), through the code that reads the real watcher's events.
         let (watcher, heard) = mpsc::channel();

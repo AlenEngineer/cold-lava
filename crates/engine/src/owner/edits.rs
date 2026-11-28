@@ -695,7 +695,10 @@ mod tests {
 
     /// The settings of a workspace with nothing of its own.
     fn settings() -> Settings {
-        Settings::load(Path::new("/nonexistent-cold-lava-workspace"))
+        Settings::load(
+            Path::new("/nonexistent-cold-lava-workspace"),
+            &Default::default(),
+        )
     }
 
     /// What the owner gives for a file of one Markdown piece, at the place `1`.
@@ -1153,7 +1156,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Lava.md"), "# Lava\n").unwrap();
         std::fs::write(dir.join("Board.canvas"), canvas).unwrap();
-        let index = crate::index::Index::build(crate::workspace::scan(&dir).unwrap());
+        let index =
+            crate::index::Index::build(crate::workspace::scan(&dir, Default::default()).unwrap());
         let note = index.by_rel("Lava").unwrap();
         let mut plan = rename::plan(&index, note, "Hot/Lava").unwrap();
         let mut desk = Edits::default();

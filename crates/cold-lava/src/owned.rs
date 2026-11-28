@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 /// The workspace at `root` as a core that knows who owns which kind of file, each owned file
 /// with what its owner gave for it before (`~/.cache/cold-lava/owners/`).
 pub fn open(root: &Path, registry: &Registry) -> Result<Core> {
-    let mut core = Core::open(root)?;
+    let mut core = Core::open(root, crate::config::configured())?;
     let kinds = registry.owned_kinds();
     if !kinds.is_empty() {
         let cache = paths::cache_dir().map(|d| d.join("cold-lava/owners"));
@@ -28,7 +28,7 @@ pub fn open(root: &Path, registry: &Registry) -> Result<Core> {
 /// owner gave (a board's card left out), as the menu's status line says it.
 pub fn workspace(root: &Path, registry: &Registry) -> Result<workspace::Workspace> {
     let workspace = match registry.owned_kinds().is_empty() {
-        true => workspace::scan(root)?,
+        true => workspace::scan(root, crate::config::configured())?,
         false => {
             let core = open(root, registry)?;
             for (owner, path) in core.unread() {

@@ -1114,7 +1114,7 @@ mod tests {
         let dir = workspace("create");
         let app = r#"{"newFileLocation": "folder", "newFileFolderPath": "Data"}"#;
         std::fs::write(dir.join(".obsidian/app.json"), app).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let named = |name: &str| {
             Request::Create(Create {
                 at: NewFile::Named {
@@ -1181,7 +1181,7 @@ mod tests {
     fn core_with_bin(dir: &Path) -> (Core, PathBuf) {
         let bin = dir.with_extension("bin");
         let _ = std::fs::remove_dir_all(&bin);
-        let mut core = Core::open(dir).unwrap();
+        let mut core = Core::open(dir, Default::default()).unwrap();
         core.set_system_trash(Some(Bin::Freedesktop(bin.clone())));
         (core, bin)
     }
@@ -1461,7 +1461,7 @@ mod tests {
         let outside = dir.with_extension("outside");
         std::fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("Data/Alias")).unwrap();
-        let core = Core::open(&dir).unwrap();
+        let core = Core::open(&dir, Default::default()).unwrap();
         let root = core.root();
         for rel in [
             "../x.md",
@@ -1508,7 +1508,7 @@ mod tests {
         let dir = workspace("kept");
         let local = r#"{"trashOption": "local"}"#;
         std::fs::write(dir.join(".obsidian/app.json"), local).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut delete = |by: &str, name: &str| {
             std::fs::write(dir.join(name), name).unwrap();
             let rev = core.stat_file(name).unwrap().rev;
@@ -1537,7 +1537,7 @@ mod tests {
         let local = r#"{"trashOption": "local"}"#;
         std::fs::write(dir.join(".obsidian/app.json"), local).unwrap();
         std::fs::write(dir.join("Theirs.md"), "the menu's\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let plan = core.stat_file("Plan.md").unwrap();
         let theirs = core.stat_file("Theirs.md").unwrap();
         let menus = core.delete_file("menu", "Theirs.md", &theirs.rev).unwrap();
@@ -1664,7 +1664,7 @@ mod tests {
     fn a_new_name_passes_over_a_link_to_nothing() {
         let dir = workspace("free-name");
         std::os::unix::fs::symlink("Gone.csv", dir.join("Untitled.csv")).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let untitled = Create {
             at: NewFile::Named {
                 name: "Untitled".into(),
@@ -1696,7 +1696,7 @@ mod tests {
     #[test]
     fn a_created_file_goes_only_where_a_new_file_may() {
         let dir = workspace("create-rule");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         for path in [
             "Data/a#b.csv",
             "Data/[x].csv",
@@ -1732,7 +1732,7 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("Secret.csv"), "x\n").unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("Data/Alias")).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let beside = outside.file_name().unwrap().to_string_lossy().into_owned();
         for name in ["Secret", "Missing"] {
             for through in [format!("Data/Alias/{name}"), format!("../{beside}/{name}")] {
@@ -1755,7 +1755,7 @@ mod tests {
         let dir = workspace("new-file-folder");
         let app = r#"{"newFileLocation": "folder", "newFileFolderPath": "../Elsewhere"}"#;
         std::fs::write(dir.join(".obsidian/app.json"), app).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let note = new_note(&core.index, "Idea", None).unwrap_err();
         assert_eq!(note.reason, Reason::Refused);
         assert!(
@@ -1834,7 +1834,7 @@ mod tests {
         std::fs::write(dir.join(".obsidian/app.json"), local).unwrap();
         std::fs::create_dir_all(dir.join("Data/[old]")).unwrap();
         std::fs::write(dir.join("Data/[old]/Table #1.csv"), "a\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let odd = "Data/[old]/Table #1.csv";
         let seen = core.stat_file(odd).unwrap();
         let gone = core.delete_file("tidy", odd, &seen.rev).unwrap();
@@ -1855,7 +1855,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("Data/.git/objects")).unwrap();
         std::fs::write(dir.join("Data/.git/objects/1f"), "x").unwrap();
         std::fs::write(dir.join("Data/.DS_Store"), "x").unwrap();
-        let core = Core::open(&dir).unwrap();
+        let core = Core::open(&dir, Default::default()).unwrap();
         let stat = |rel: &str| serde_json::to_value(core.stat_file(rel).unwrap()).unwrap();
         let data = stat("Data");
         assert_eq!(data["inside"], json!(["Data/Eruptions.csv"]));
@@ -2010,7 +2010,7 @@ mod tests {
     #[test]
     fn writing_a_note_reads_it_again_and_outside_changes_to_files_are_events() {
         let dir = workspace("events");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let note = core.read_file("Plan.md").unwrap();
         core.write_file("Plan.md", "[[Lava]]\n", &note.rev).unwrap();
         assert!(

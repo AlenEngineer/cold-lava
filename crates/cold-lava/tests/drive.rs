@@ -433,7 +433,7 @@ fn a_subscriber_hears_the_menus_delete_and_undo_once_each() {
 /// Links in notes that lead nowhere, as `note name: target` (names survive folder moves).
 fn unresolved(workspace: &Path) -> Vec<String> {
     use cold_lava_engine::{index::Index, resolver::Files, workspace};
-    let ix = Index::build(workspace::scan(workspace).unwrap());
+    let ix = Index::build(workspace::scan(workspace, Default::default()).unwrap());
     let files = Files::of_workspace(&ix);
     let mut out = Vec::new();
     for n in &ix.workspace.notes {

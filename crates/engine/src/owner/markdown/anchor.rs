@@ -625,7 +625,7 @@ fields.w = { capture = "w" }
             each_item(&format!("Tricky {k}.md"), text, &typed, &mut tally);
         }
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
-        let s = Settings::load(&root);
+        let s = Settings::load(&root, &Default::default());
         for e in walkdir::WalkDir::new(&root).into_iter().flatten() {
             let path = e.path();
             if path.extension().is_some_and(|x| x == "md") {

@@ -16,6 +16,7 @@ mod draft;
 use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE};
 use crate::bind::{Binding, Source};
 use crate::commands::{self, KeyHint, Keymap, SHAPE_EDITOR, ShapeEditorAction as Action};
+use crate::configured::Configured;
 use crate::core::{Core, Event as CoreEvent};
 use crate::gateway::News;
 use crate::notice::Notice;
@@ -183,6 +184,8 @@ const STEPS: &[&str] = &[
 /// The shape editor, open on one shape.
 pub struct Editor {
     root: PathBuf,
+    /// What the workspace's core was opened with: its shapes come before the workspace's.
+    configured: Arc<Configured>,
     id: String,
     def: Definition,
     /// The block this shape is in the file, by id; `None` until it is first saved.
@@ -222,7 +225,7 @@ pub struct Editor {
 impl Editor {
     /// The editor on `start`, in the workspace at `root`.
     pub fn open(root: &Path, core: &mut Core, start: Start) -> Result<Editor> {
-        let mut e = read(root, start)?;
+        let mut e = read(root, core.configured().clone(), start)?;
         e.reload();
         e.settle(core);
         if e.def.parts.is_empty() {
@@ -277,8 +280,9 @@ impl Editor {
     }
 }
 
-/// The editor's state for `start`, read from the workspace's shapes file.
-fn read(root: &Path, start: Start) -> Result<Editor> {
+/// The editor's state for `start`, read from the workspace's shapes file, with the shapes its
+/// core was `configured` with before the workspace's.
+fn read(root: &Path, configured: Arc<Configured>, start: Start) -> Result<Editor> {
     let path = root.join(shapes::WORKSPACE_FILE);
     let read = match std::fs::read(&path) {
         Ok(b) => Some(b),
@@ -292,7 +296,7 @@ fn read(root: &Path, start: Start) -> Result<Editor> {
         .into_owned();
     let (id, def, replacing) = match start {
         Start::New => {
-            let taken = shapes::for_workspace(root);
+            let taken = shapes::for_workspace(root, &configured.shapes);
             let id = (1..)
                 .map(|n| format!("shape{n}"))
                 .find(|id| taken.get(id).is_none())
@@ -316,6 +320,7 @@ fn read(root: &Path, start: Start) -> Result<Editor> {
     let saved = replacing.as_ref().map(|id| (id.clone(), def.clone()));
     Ok(Editor {
         root: root.to_path_buf(),
+        configured,
         id,
         def,
         replacing,
@@ -368,7 +373,7 @@ impl Editor {
     /// Loads the draft as the workspace's shape, to draw and check it; the preview is bound
     /// to it again by `settle`.
     fn reload(&mut self) {
-        self.loaded = shapes::with_draft(&self.root, &self.id, &self.def);
+        self.loaded = shapes::with_draft(&self.root, &self.configured.shapes, &self.id, &self.def);
         self.errors = draft_errors(&self.loaded.errors, &self.id);
         if self.errors.is_empty()
             && let Some(l) = self.loaded.get(&self.id)
