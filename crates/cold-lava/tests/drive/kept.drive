@@ -14,7 +14,7 @@ wait-for Beside the note each is for
 expect Inbox/Field Season.md
 expect .Field Season.cold-lava-kept-
 screen
-keys enter
+keys j enter
 wait-for The text another program saved meanwhile.
 keys ctrl+o
 wait-for Beside the note each is for
