@@ -1,0 +1,22 @@
+# A save on the whiteboard while another program writes the same canvas (#395). tests/drive.rs
+# writes Inbox/Pin.canvas first: Alpha and Bravo. `1` colours Alpha and saves, and the other
+# program's write, which adds Charlie, comes at once, with no wait, so it lands while the save
+# is under way. Whichever comes first, Charlie is kept and the board merges it. tests/drive.rs
+# reads the file after.
+size 100x30
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace
+keys w
+wait-for whiteboards · type to filter · ⏎ open · Esc back
+type pin
+keys enter
+wait-for whiteboard Pin · 2 cards · 0 arrows
+click 12 20
+wait-for ┃Alpha
+keys 1
+write Inbox/Pin.canvas {"nodes":[\n{"id":"a","type":"text","text":"Alpha","x":0,"y":0,"width":200,"height":100},\n{"id":"b","type":"text","text":"Bravo","x":300,"y":0,"width":200,"height":100},\n{"id":"c","type":"text","text":"Charlie","x":0,"y":-200,"width":200,"height":100}\n],"edges":[]}\n
+wait-for whiteboard Pin · 3 cards · 0 arrows
+keys q
+wait-for cold-lava workspaces
+keys q
+exits 0

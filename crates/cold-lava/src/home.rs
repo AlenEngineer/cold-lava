@@ -6667,7 +6667,7 @@ fn tag_note(
     };
     (read::Seen::kept(&path, text.as_bytes()).replace_through_link(new.as_bytes()))
         .map(|()| true)
-        .map_err(|e| format!("{name}: {e}"))
+        .map_err(|e| format!("{name}: {}", e.named_from(root)))
 }
 
 fn dir_of_rel(rel: &str) -> &str {

@@ -1293,16 +1293,20 @@ impl Board {
                 self.disk = buf;
                 self.unsaved = false;
             }
-            Err(crate::write::WriteError::Changed(_)) => {
-                self.unsaved = true;
-                self.flash(
-                    "not saved: the file changed on disk and can't be read yet. Your edits are \
-                     kept and saved once it can",
-                );
-            }
             Err(e) => {
                 self.unsaved = true;
-                self.flash(format!("save failed: {e}"));
+                match crate::gateway::Reason::of(&e) {
+                    crate::gateway::Reason::Changed => self.flash(
+                        "not saved: the file changed on disk and can't be read yet. Your edits \
+                         are kept and saved once it can",
+                    ),
+                    crate::gateway::Reason::Kept => self.flash(format!(
+                        "not saved: {}. Your edits stay here and are saved once the file can \
+                         be read",
+                        e.named_from(&self.workspace_root)
+                    )),
+                    _ => self.flash(format!("save failed: {e}")),
+                }
             }
         }
     }

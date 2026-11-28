@@ -147,7 +147,9 @@ ext.run()
 ```
 
 A refusal comes back as a JSON-RPC error whose `data` is `{reason, message}`. `Refused.reason`
-is one of `changed`, `refused`, `read-back`, `io`, `forbidden`, `no-workspace` or `exists`.
+is one of `changed`, `refused`, `read-back`, `io`, `forbidden`, `no-workspace`, `exists` or
+`kept` (another program wrote the file meanwhile, and a text taken out of it is kept in a
+hidden file beside it: show the message, which names it).
 
 An item's `id` says where it is now: it changes when a task is reworded or its note is
 renamed, so don't keep it once the session is over. To keep a reference to an item, anchor it:

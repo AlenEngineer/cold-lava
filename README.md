@@ -632,7 +632,10 @@ its id), and a two-line task whose first line ends in `^x` would give the new oc
 as a new anchor. Unticking a line cold-lava 0.6.0 ticked after its id (`- [x] Pay rent ^rent
 ✅ 2026-11-07`) gives `- [ ] Pay rent ^rent`, and the task its anchor back.
 Pass the `id` from the agenda: if the line has changed since, nothing is touched
-and the exit code is **3**, so the caller can refresh. In the main menu, `t` opens today's note,
+and the exit code is **3**, so the caller can refresh. If another program wrote the note while
+it was being written and a text taken out of it couldn't go back, that text is kept in a
+hidden file beside the note, the message names it, and the exit code is **4** (`"kept": true`
+with `--json`). In the main menu, `t` opens today's note,
 and `x` in the reader ticks a task the same way. Custom statuses whose next status is a
 cancelled one get the cancelled date (`❌`, or `[cancelled:: …]`) unless the plugin's "set
 cancelled date" is off.

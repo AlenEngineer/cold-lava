@@ -790,6 +790,26 @@ fn the_whiteboard_moves_edits_and_merges_cards() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Another program's write that lands while the whiteboard saves is never written over (#395).
+#[test]
+fn a_write_while_the_whiteboard_saves_is_kept() {
+    let dir = sandbox("board-save-race");
+    let workspace = dir.join("example-workspace");
+    std::fs::write(
+        workspace.join("Inbox/Pin.canvas"),
+        "{\"nodes\":[\n\
+         {\"id\":\"a\",\"type\":\"text\",\"text\":\"Alpha\",\"x\":0,\"y\":0,\"width\":200,\"height\":100},\n\
+         {\"id\":\"b\",\"type\":\"text\",\"text\":\"Bravo\",\"x\":300,\"y\":0,\"width\":200,\"height\":100}\n\
+         ],\"edges\":[]}\n",
+    )
+    .unwrap();
+    let out = drive("board-save-race.drive", &dir);
+    assert_passed(&out);
+    let text = std::fs::read_to_string(workspace.join("Inbox/Pin.canvas")).unwrap();
+    assert!(text.contains("Charlie"), "the other program's card: {text}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn placed(nodes: &serde_json::Value, id: &str) -> serde_json::Value {
     (nodes.as_array().unwrap().iter())
         .find(|n| n["id"] == id)

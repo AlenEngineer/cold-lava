@@ -15,7 +15,7 @@ import traceback
 
 class Refused(Exception):
     """cold-lava refused a request. `reason` is one of changed, refused, read-back, io,
-    forbidden, no-workspace or exists (docs/extensions.md, "The workspace gateway, as built")."""
+    forbidden, no-workspace, exists or kept (docs/extensions.md, "The workspace gateway, as built")."""
 
     def __init__(self, error):
         data = error.get("data") or {}
