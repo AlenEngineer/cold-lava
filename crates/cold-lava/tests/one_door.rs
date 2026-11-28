@@ -293,8 +293,6 @@ fn the_app_deletes_restores_and_makes_folders_through_the_core() {
         "home.rs: write::create",
         "home.rs: write::create_if_missing",
         "home.rs: write::create_if_missing",
-        "home.rs: write::create_if_missing",
-        "home.rs: write::create_if_missing",
     ];
     assert_eq!(named, left);
     let home = sources().into_iter().find(|(file, _)| file == "home.rs");
@@ -639,7 +637,7 @@ fn the_index_is_still_read_outside_the_core_here() {
     let found = tally(per_file(&files, |code| times(code, &[".index"])));
     let left = [
         "../host/src/host.rs: .index ×2",
-        "home.rs: .index ×39",
+        "home.rs: .index ×37",
         "main.rs: .index ×3",
         "owned.rs: .index ×2",
     ];
