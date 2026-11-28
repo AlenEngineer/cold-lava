@@ -1813,6 +1813,26 @@ fn an_extension_cant_close_a_prompt_a_dialog_or_a_typed_query() {
 
 /// Needs python3, which CI's runners have.
 #[test]
+fn an_extension_cant_open_a_file_in_a_hidden_folder() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("open-hidden");
+    let home = dir.join("home");
+    let push = "    ext.open_note(\".obsidian/graph.json\")\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "open-hidden.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
 fn a_prompt_does_what_it_was_opened_for_whatever_an_extension_selects() {
     if !has_python() {
         eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
