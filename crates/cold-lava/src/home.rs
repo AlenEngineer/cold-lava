@@ -5430,7 +5430,7 @@ impl Home {
         // there may have a name a new one couldn't (`#` in it).
         match files::new_path(&root, note) {
             Ok(new) => {
-                crate::write::create_if_missing(new.path(), b"").map_err(|e| e.to_string())?;
+                self.create_unless_there(&new, "").map_err(|e| e.message)?;
             }
             Err(e) if !path.is_file() => return Err(e.message),
             Err(_) => {}
@@ -5518,9 +5518,9 @@ impl Home {
             }
             None => format!("# {title}\n\n"),
         };
-        // `create` is the one test of whether the name is free: a symlink to nothing takes
-        // it too, which `Path::exists` would call free.
-        match crate::write::create(path, body.as_bytes()) {
+        // The core's create is the one test of whether the name is free: a symlink to nothing
+        // takes it too, which `Path::exists` would call free.
+        match self.create_file(new, &body) {
             Ok(()) => {
                 if !in_folder.rel.is_empty() {
                     self.expanded.insert(in_folder.rel.clone());
@@ -5530,7 +5530,7 @@ impl Home {
                     None => format!("created {rel}"),
                 });
             }
-            Err(crate::write::WriteError::Exists(_)) => self.flash(format!("{rel} already exists")),
+            Err(e) if e.reason == Reason::Exists => self.flash(format!("{rel} already exists")),
             Err(e) => {
                 self.flash(format!("can't create {rel}: {e}"));
                 return;
@@ -5538,7 +5538,7 @@ impl Home {
         }
         // Make sure the new note is visible, even if a filter was active.
         self.filter.clear();
-        self.reload_tree();
+        self.after_core_change();
         if let Some(r) = self.rows.iter().position(|&i| self.items[i].rel == rel) {
             self.nsel = r;
             self.pending = None;
@@ -5566,13 +5566,56 @@ impl Home {
             }
         };
         let rel = new.rel();
-        if let Err(e) = crate::write::create_if_missing(new.path(), b"") {
-            self.flash(format!("couldn't create {rel}: {e}"));
-            return None;
+        match self.create_unless_there(&new, "") {
+            Ok(true) => self.flash(format!("created {rel}")),
+            Ok(false) => self.flash(format!("{rel} was already there")),
+            Err(e) => {
+                self.flash(format!("couldn't create {rel}: {e}"));
+                return None;
+            }
         }
-        self.flash(format!("created {rel}"));
-        self.reload_tree();
+        self.after_core_change();
         Some(new.path().to_path_buf())
+    }
+
+    /// `create_file`, but a file already at `new` is no refusal: whether it was made.
+    fn create_unless_there(
+        &mut self,
+        new: &files::NewPath,
+        text: &str,
+    ) -> Result<bool, crate::gateway::Error> {
+        match self.create_file(new, text) {
+            Ok(()) => Ok(true),
+            Err(e) if e.reason == Reason::Exists => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Make the file at `new` holding `text`, through the core, which reads it at once.
+    /// Refused as `Exists` when something is there, and refused when `new` was checked in
+    /// another workspace than the core's.
+    fn create_file(
+        &mut self,
+        new: &files::NewPath,
+        text: &str,
+    ) -> Result<(), crate::gateway::Error> {
+        let Some(core) = self.core.as_mut() else {
+            return Err(crate::gateway::Error::new(
+                Reason::NoWorkspace,
+                "no workspace is open",
+            ));
+        };
+        if new.path() != core.root().join(new.rel()) {
+            return Err(crate::gateway::Error::new(
+                Reason::Refused,
+                format!("{} isn't in the workspace open", new.rel()),
+            ));
+        }
+        let at = files::NewFile::At {
+            path: new.rel().to_string(),
+        };
+        let text = text.to_string();
+        core.create_file(&files::Create { at, text }).map(drop)
     }
 
     /// Where new notes and folders go: the selected folder, or the selected note's, in the
