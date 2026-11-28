@@ -91,6 +91,94 @@ enum Asked {
     Shape(Box<Ask>),
 }
 
+/// Why a request has no answer.
+enum Failure {
+    /// The extension answered it with an error, this message.
+    Refused(String),
+    /// It wasn't answered within its limit.
+    Late(Duration),
+    /// The extension stopped, for this reason.
+    Stopped(String),
+}
+
+impl Asked {
+    fn method(&self) -> &'static str {
+        match self {
+            Asked::Initialize => "initialize",
+            Asked::Command(_) => "command/run",
+            Asked::Read { .. } => "file/read",
+            Asked::Edit { .. } => "file/edit",
+            Asked::Preview { .. } => "file/preview",
+            Asked::Shape(ask) => ask.method(),
+        }
+    }
+
+    /// How long it may go unanswered.
+    fn limit(&self, t: Timeouts) -> Duration {
+        match self {
+            Asked::Initialize => t.start,
+            _ => t.request,
+        }
+    }
+
+    /// This request of the extension `name` has no answer. A failed `initialize` stops the
+    /// extension: the reason is returned, for `fail`. A failed command is said on the status
+    /// line, and whoever waits on any other request is answered.
+    fn failed(self, host: &mut Host<'_>, name: &str, failure: Failure) -> Option<String> {
+        let late = |method: &str, after: Duration| {
+            format!("it didn't answer {method} in {} s", after.as_secs_f32())
+        };
+        match (self, failure) {
+            (Asked::Initialize, Failure::Refused(m)) => Some(format!("it refused initialize: {m}")),
+            (Asked::Initialize, Failure::Late(after)) => Some(late("initialize", after)),
+            (Asked::Command(_), Failure::Refused(m)) => {
+                host.notify(format!("{name}: {m}"));
+                None
+            }
+            (Asked::Command(command), Failure::Late(after)) => {
+                let secs = after.as_secs_f32();
+                host.notify(format!("{name} didn't answer {command} in {secs} s"));
+                None
+            }
+            (Asked::Initialize | Asked::Command(_), Failure::Stopped(_)) => None,
+            (asked, failure) => {
+                let why = match failure {
+                    Failure::Refused(m) => m,
+                    Failure::Late(after) => late(asked.method(), after),
+                    Failure::Stopped(why) => format!("it stopped: {why}"),
+                };
+                asked.answer(host, Err(why));
+                None
+            }
+        }
+    }
+
+    /// Hand whoever waits on this request its answer: what the extension answered, or why
+    /// there is none. Nobody waits on `initialize` or `command/run`: what their failure means
+    /// is the caller's to say.
+    fn answer(self, host: &mut Host<'_>, outcome: Result<Value, String>) {
+        let method = self.method();
+        match self {
+            Asked::Initialize | Asked::Command(_) => {}
+            Asked::Read { path, rev } => host.file_given(&path, &rev, read(method, outcome)),
+            Asked::Edit { path, rev } => {
+                let text = read::<NewText>(method, outcome).map(|t| t.text.into_string());
+                host.file_edited(&path, &rev, text);
+            }
+            Asked::Preview { path, rev } => host.file_previewed(&path, &rev, read(method, outcome)),
+            Asked::Shape(ask) => host.shape_answered(&ask, read(method, outcome)),
+        }
+    }
+}
+
+/// An answer to `method` read as what it answers with.
+fn read<T: serde::de::DeserializeOwned>(
+    method: &str,
+    outcome: Result<Value, String>,
+) -> Result<T, String> {
+    outcome.and_then(|v| serde_json::from_value(v).map_err(|e| unread(method, &e)))
+}
+
 impl Process {
     pub fn new(installed: Installed) -> Option<Process> {
         let connector = transport::connector(&installed.launch.transport)?;
@@ -133,17 +221,19 @@ impl Process {
             subscriptions: Vec::new(),
             later: HashMap::new(),
         });
-        self.ask(Asked::Initialize, "initialize", params, host);
+        self.ask(Asked::Initialize, params, host);
     }
 
     /// Send one request, remembering what it asked.
-    fn ask(&mut self, asked: Asked, method: &str, params: Value, host: &mut Host<'_>) {
+    fn ask(&mut self, asked: Asked, params: Value, host: &mut Host<'_>) {
         let State::Live(live) = &mut self.state else {
             return;
         };
         let id = live.next_id;
         live.next_id += 1;
-        let sent = live.transport.send(rpc::request(id, method, params));
+        let sent = live
+            .transport
+            .send(rpc::request(id, asked.method(), params));
         live.waiting.insert(id, (asked, Instant::now()));
         if let Err(e) = sent {
             self.fail(host, e.to_string());
@@ -168,20 +258,6 @@ impl Process {
         for sub in live.subscriptions {
             let _ = host.unsubscribe_items(sub);
         }
-        for (asked, _) in live.waiting.into_values() {
-            match asked {
-                Asked::Read { path, rev } => {
-                    host.file_given(&path, &rev, Err(format!("it stopped: {why}")))
-                }
-                Asked::Edit { path, rev } => {
-                    host.file_edited(&path, &rev, Err(format!("it stopped: {why}")))
-                }
-                Asked::Preview { path, rev } => {
-                    host.file_previewed(&path, &rev, Err(format!("it stopped: {why}")))
-                }
-                _ => {}
-            }
-        }
         let last = (self.launch.log.as_ref())
             .and_then(|log| std::fs::read_to_string(log).ok())
             .and_then(|text| {
@@ -192,6 +268,10 @@ impl Process {
             Some(last) => format!("{why}: {last}"),
             None => why,
         };
+        let name = &self.manifest.name;
+        for (asked, _) in live.waiting.into_values() {
+            asked.failed(host, name, Failure::Stopped(why.clone()));
+        }
         host.status(None);
         host.notify(format!("{} stopped: {why}", self.manifest.name));
         self.state = State::Stopped(why);
@@ -204,40 +284,12 @@ impl Process {
         let Some((asked, _)) = id.as_u64().and_then(|id| live.waiting.remove(&id)) else {
             return;
         };
-        match (asked, outcome) {
-            (Asked::Initialize, Err(e)) => {
-                self.fail(host, format!("it refused initialize: {}", e.message))
-            }
-            (Asked::Command(_), Err(e)) => {
-                host.notify(format!("{}: {}", self.manifest.name, e.message))
-            }
-            (Asked::Read { path, rev }, outcome) => {
-                let given = outcome
-                    .map_err(|e| e.message)
-                    .and_then(|v| serde_json::from_value(v).map_err(|e| unread("file/read", &e)));
-                host.file_given(&path, &rev, given);
-            }
-            (Asked::Edit { path, rev }, outcome) => {
-                let text = outcome.map_err(|e| e.message).and_then(|v| {
-                    serde_json::from_value::<NewText>(v)
-                        .map(|t| t.text.into_string())
-                        .map_err(|e| unread("file/edit", &e))
-                });
-                host.file_edited(&path, &rev, text);
-            }
-            (Asked::Preview { path, rev }, outcome) => {
-                let content = outcome.map_err(|e| e.message).and_then(|v| {
-                    serde_json::from_value(v).map_err(|e| unread("file/preview", &e))
-                });
-                host.file_previewed(&path, &rev, content);
-            }
-            (Asked::Shape(ask), outcome) => {
-                let answer = outcome
-                    .map_err(|e| e.message)
-                    .and_then(|v| serde_json::from_value(v).map_err(|e| unread(ask.method(), &e)));
-                host.shape_answered(&ask, answer);
-            }
-            _ => {}
+        let refused = match outcome {
+            Ok(answer) => return asked.answer(host, Ok(answer)),
+            Err(e) => Failure::Refused(e.message),
+        };
+        if let Some(why) = asked.failed(host, &self.manifest.name, refused) {
+            self.fail(host, why);
         }
     }
 
@@ -248,17 +300,7 @@ impl Process {
         };
         let t = self.timeouts;
         let late: Vec<u64> = (live.waiting.iter())
-            .filter(|(_, (asked, sent))| {
-                let limit = match asked {
-                    Asked::Initialize => t.start,
-                    Asked::Command(_)
-                    | Asked::Read { .. }
-                    | Asked::Edit { .. }
-                    | Asked::Preview { .. }
-                    | Asked::Shape(_) => t.request,
-                };
-                sent.elapsed() > limit
-            })
+            .filter(|(_, (asked, sent))| sent.elapsed() > asked.limit(t))
             .map(|(id, _)| *id)
             .collect();
         let name = &self.manifest.name;
@@ -266,35 +308,9 @@ impl Process {
             let Some((asked, _)) = live.waiting.remove(&id) else {
                 continue;
             };
-            match asked {
-                Asked::Initialize => {
-                    let secs = t.start.as_secs_f32();
-                    return self.fail(host, format!("it didn't answer initialize in {secs} s"));
-                }
-                Asked::Command(command) => {
-                    let secs = t.request.as_secs_f32();
-                    host.notify(format!("{name} didn't answer {command} in {secs} s"));
-                }
-                Asked::Read { path, rev } => {
-                    let secs = t.request.as_secs_f32();
-                    let why = format!("it didn't answer file/read in {secs} s");
-                    host.file_given(&path, &rev, Err(why));
-                }
-                Asked::Edit { path, rev } => {
-                    let secs = t.request.as_secs_f32();
-                    let why = format!("it didn't answer file/edit in {secs} s");
-                    host.file_edited(&path, &rev, Err(why));
-                }
-                Asked::Preview { path, rev } => {
-                    let secs = t.request.as_secs_f32();
-                    let why = format!("it didn't answer file/preview in {secs} s");
-                    host.file_previewed(&path, &rev, Err(why));
-                }
-                Asked::Shape(ask) => {
-                    let secs = t.request.as_secs_f32();
-                    let why = format!("it didn't answer {} in {secs} s", ask.method());
-                    host.shape_answered(&ask, Err(why));
-                }
+            let late = Failure::Late(asked.limit(t));
+            if let Some(why) = asked.failed(host, name, late) {
+                return self.fail(host, why);
             }
         }
     }
@@ -320,7 +336,7 @@ impl Extension for Process {
             return host.notify(format!("{name} isn't running, so {id} can't run"));
         }
         let params = json!({"id": id, "args": args});
-        self.ask(Asked::Command(id), "command/run", params, host);
+        self.ask(Asked::Command(id), params, host);
     }
 
     fn items(&mut self, news: News, host: &mut Host<'_>) {
@@ -351,7 +367,7 @@ impl Extension for Process {
             rev: read.rev.clone(),
         };
         let params = serde_json::to_value(read).unwrap_or_default();
-        self.ask(asked, "file/read", params, host);
+        self.ask(asked, params, host);
     }
 
     fn preview_file(&mut self, preview: FilePreview, host: &mut Host<'_>) {
@@ -364,7 +380,7 @@ impl Extension for Process {
             rev: preview.rev.clone(),
         };
         let params = serde_json::to_value(preview).unwrap_or_default();
-        self.ask(asked, "file/preview", params, host);
+        self.ask(asked, params, host);
     }
 
     fn shape(&mut self, ask: Ask, host: &mut Host<'_>) {
@@ -372,11 +388,10 @@ impl Extension for Process {
             let why = format!("{} isn't running", self.manifest.name);
             return host.shape_answered(&ask, Err(why));
         }
-        let method = ask.method();
         let params = (serde_json::to_value(&ask).ok())
             .and_then(|mut v| v.get_mut("params").map(Value::take))
             .unwrap_or_default();
-        self.ask(Asked::Shape(Box::new(ask)), method, params, host);
+        self.ask(Asked::Shape(Box::new(ask)), params, host);
     }
 
     fn edit_file(&mut self, edit: FileEdit, host: &mut Host<'_>) {
@@ -389,7 +404,7 @@ impl Extension for Process {
             rev: edit.rev.clone(),
         };
         let params = serde_json::to_value(edit).unwrap_or_default();
-        self.ask(asked, "file/edit", params, host);
+        self.ask(asked, params, host);
     }
 
     fn edited(
@@ -1067,6 +1082,44 @@ mod tests {
 
         tick_first(&mut core, tasks(&[]));
         assert_eq!(core.take_item_news(), [], "its subscription went with it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D3 (#267): a shape question is answered when the extension stops before answering it,
+    /// as when it doesn't answer in time, so the region doesn't wait on it for good. The
+    /// answer says why as the notice does, with the last line of its log.
+    #[test]
+    fn a_crash_answers_the_shape_question_it_left_waiting() {
+        static CRASH: Scripted = Scripted(|m| match m["method"].as_str() {
+            Some("initialize") => Some(vec![answer(m, json!({}))]),
+            Some("shape/region") => None,
+            _ => Some(Vec::new()),
+        });
+        let dir = workspace("shape-crash");
+        let log = dir.join("fake.log");
+        std::fs::write(&log, "Traceback: ZeroDivisionError\n").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let mut r = scripted(&CRASH, &dir, Some(log));
+        r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
+        let ask = Ask::Region {
+            placed: 1,
+            shape: "fake.tally".into(),
+            region: "count".into(),
+            inputs: Default::default(),
+        };
+        r.ask_shape(ExtId(0), Some(&mut core), ask);
+        poll_for(&mut r, &mut core, Duration::from_millis(50));
+        assert!(!r.running(ExtId(0)));
+        let shapes = crate::shapes::Shapes::default();
+        let answers: Vec<_> = (core.take_shape_answers(&shapes).into_iter())
+            .map(|a| (a.ask.method(), a.answer))
+            .collect();
+        let why = "it stopped: it exited with status 1: Traceback: ZeroDivisionError";
+        assert_eq!(
+            answers,
+            [("shape/region", Err(why.into()))],
+            "with its log's last line"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

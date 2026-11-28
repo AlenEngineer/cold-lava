@@ -1790,7 +1790,7 @@ fn every_field_of_an_answer_names_its_bound() {
         remedy,
         &found,
         &[
-            "../host/src/process.rs: serde_json::from_ ×4",
+            "../host/src/process.rs: serde_json::from_ ×1",
             "../host/src/rpc.rs: serde_json::from_ ×5",
         ],
     );
