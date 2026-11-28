@@ -1178,7 +1178,9 @@ mod tests {
         let mut core = Core::open(&dir, Default::default()).unwrap();
         r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
         core.set_owners(r.owned_kinds(), None);
-        // What the menu does each frame: poll, ask the owner, hand out the answers.
+        // A frame of the test's own, not `Registry::frame`: poll, ask the owner, then hand it
+        // every answer to an `items/edit`, the edit `test` makes included, which a frame would
+        // drop (no extension is `test`).
         let frames = |r: &mut Registry, core: &mut Core, n: usize| {
             let mut effects = Vec::new();
             for _ in 0..n {
@@ -1261,11 +1263,8 @@ mod tests {
     fn until(r: &mut Registry, core: &mut Core, done: impl Fn(&Effect) -> bool) -> Effect {
         let (mut effects, deadline) = (Vec::new(), Instant::now() + Duration::from_secs(20));
         while Instant::now() < deadline {
-            core.poll();
-            for (_, news) in core.take_item_news() {
-                effects.extend(r.call(ExtId(0), Some(core), |e, h| e.items(news, h)));
-            }
-            effects.extend(r.call(ExtId(0), Some(core), |e, h| e.poll(h)));
+            let events = core.poll();
+            effects.extend(r.frame(core, &events).into_iter().map(|(_, effect)| effect));
             if let Some(found) = effects.iter().find(|e| done(e)) {
                 return found.clone();
             }

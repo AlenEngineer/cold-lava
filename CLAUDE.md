@@ -603,7 +603,7 @@ No engine setting is the process's.
 Every frontend runs extensions through it, so the permission check exists once. Don't write
 another host or check in a frontend:
 
-- `lib.rs` names the five modules' items at the crate's root (`cold_lava_host::Host`, …).
+- `lib.rs` names the six modules' items at the crate's root (`cold_lava_host::Host`, …).
   `extension.rs`: `Extension` (one method per host→extension JSON-RPC method). `registry.rs`:
   `Registry` (loaded extensions and their manifests, who owns which kind of file, who shows
   which notes, what was left out; `call`, `ask_shape`, `screen`; `load` takes the frontend's
@@ -611,7 +611,19 @@ another host or check in a frontend:
   extension→host method; it queues `Effect`s and checks `Permission`s). `manifest.rs`: the
   manifest types (`Manifest`, `FileType`, `Shows`, `Spec`, `CommandSpec`, `Permission`) and
   their rules (`namespaced`, `claimable`, `leave_out_definitions`). `protocol.rs`: `Effect`s
-  and the other messages as data. Three rules:
+  and the other messages as data. `deliver.rs`: what a frame hands extensions and in which
+  order (`Deliveries`, `Step`, `frame`): item news to its subscriber, `file/changed`,
+  `file/read` and `file/edit` to owners, the later answers to `items/edit`, then a poll of
+  each extension, each step taking from the core as it begins; what has nobody to go to is
+  dealt with there (a subscription nobody holds stopped, an owner not loaded answered); with
+  no core only the polls run. A frontend calls each extension it names and applies its
+  effects before the next. `Registry::frame` runs a whole `frame` and gives the effects back
+  (the headless example, the host's tests). The menu (`Home::deliver`) doesn't run `frame`:
+  it polls every frame, and delivers the news and then `after_sync` (the steps between the
+  news and the polls) after each sync with the core, so a new step goes into both lists in
+  `deliver.rs`, which a test keeps in line. `cold-lava board`'s own loop and the command line's
+  `owned::Owners` don't use it: the one serves only the board, the other starts owners as
+  they are asked for. Three rules:
   - An extension can only do what a message can say: every type that crosses derives serde.
   - Extensions never see keystrokes and never draw: the core owns, draws, resizes and types
     into panes, and draws the lists and tables they send (`view/open`), telling them what the
