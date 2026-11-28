@@ -243,7 +243,7 @@ then a query and a view, not a parser of its own.
 - **Files.** `workspace/read`, `workspace/write`, `workspace/create` and `workspace/files`
   read and write whole files ("File types, as built" below). `workspace/stat`,
   `workspace/delete`, `workspace/restore` and `workspace/create-folder` are there too
-  ("Deleting, restoring and making folders").
+  ("Deleting, restoring and making folders"), and `workspace/kept` ("Kept texts, as built").
 - **The link graph.** `links/query` (no params, `items.read`) answers every file links come
   from and where each link leads, whatever owns the file (`crates/engine/src/links.rs`, pinned
   there): `{"files": [{"path": "Volcanoes/Kīlauea.md", "name": "Kīlauea", "tags":
@@ -1670,6 +1670,54 @@ bookmarks, a saved list, are removed instead, #373), so each doesn't invent one:
 - Permissions name what the user would say: `files.write` for a change to text (rename,
   merge and recipes rewrite links), `files.delete` when something leaves the workspace (a
   merge trashes its source, so it needs both).
+
+### Kept texts, as built
+
+*(#427: a text a save couldn't put back, found from the menu and from an extension.)*
+
+When two other programs save a note in the moment a cold-lava save of it is under way, the
+engine can't always put back the text it took out of the file: it keeps it beside the file,
+under a hidden name (`.Lava.cold-lava-kept-1700000000-0.md` beside `Lava.md`), and the save is
+refused as `kept` with both names. A cold-lava killed during a save can leave the same under
+its staged name (`.Lava.md.cold-lava-PID-N.tmp`, or `….aside` for a note moved aside where
+files can't be swapped): the first write in that folder clears it, putting a note moved aside
+back at its path when nothing is there (any other staged file at an empty path is one another
+program deleted or renamed since, and is kept), but where that clearing can't run (a file
+system without the folder's lock, as NFS is) it stays. Hidden, so the scan,
+the tree and Obsidian pass it by, which is what keeps it from becoming a second note with the
+same links and tags. So the core lists them, and every frontend shows them until they are
+dealt with:
+
+| Request | Answer |
+| --- | --- |
+| `workspace/kept` (no params, `files.read`) | `{kept: [{path, kept, rev}]}`: the file each text was taken from, where the text is, and its version; sorted by `kept` |
+
+```json
+{"method": "workspace/kept"}
+{"kept": [{"path": "Concepts/Lava.md", "kept": "Concepts/.Lava.cold-lava-kept-1700000000-0.md", "rev": "9c1d0a52e17b3f04"}]}
+```
+
+- **Found by one finder.** `write::find_kept` (`write/find.rs`) reads a folder: a kept name,
+  or a staged file a dead cold-lava left that the clearing would take (`stale::left`, the same
+  test), not an empty one. The core
+  lists every folder the scan reads as it opens, again when its watcher hears a kept name,
+  on a rescan and after its own delete or restore, and says `KeptChanged` when the list
+  changed. The list is in memory: asking costs no read of the disk.
+- **Read and put away with the file messages.** `workspace/read` and `workspace/stat` take
+  a `kept` path, and `workspace/delete` puts one away to the trash (`files.delete`), as for
+  any file: `files::normal_or_kept` lets through a hidden name only when the finder finds it
+  in its folder, and `workspace/restore` puts one put away back under its hidden name.
+  Nothing else writes, makes or moves a file under such a name (a rename's source is
+  `normal`'s), so comparing it with the note and putting it back over the note are the
+  client's: read both, `workspace/write` the note with what it wants, then delete the kept
+  text.
+- **Its permission is `files.read`** (and `files.delete` to put one away), whatever kinds the
+  asker owns: a kept text's hidden name ends in its file's suffix, a killed save's in `tmp`,
+  and neither is a kind it is judged by (`files::names_kept`).
+- **In the terminal** the built-in extension `kept` (`crates/cold-lava/src/kept_ext.rs`) asks
+  the gateway once a frame and says how many there are on its part of the status line;
+  its command (`kept.open`, "Kept texts" in the palette) lists them by the note each is for,
+  Enter opens one in the reader, `d` puts it away to the trash and `u` puts it back.
 
 ### Owners and types, as built
 

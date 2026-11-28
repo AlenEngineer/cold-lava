@@ -3,7 +3,7 @@
 //! each path by its names in the workspace (`named`) and what it is (`classify`), which
 //! leaves out what the scan doesn't read (`workspace::is_scanned`).
 
-use crate::workspace;
+use crate::{workspace, write};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -68,6 +68,12 @@ pub enum Kind {
     Board(String),
     File(String),
     GraphSettings,
+    /// A kept text's name (`write::kept_for`) in a folder the scan reads: one was kept, or put
+    /// away (`Core::kept_texts`).
+    Kept,
+    /// A staged write's name (`write::is_staged`) in a folder the scan reads: one of every
+    /// save's, or a killed save's leftover the core lists, which the sweep took away.
+    Staged,
     /// Something without an extension: most likely a folder that was moved or deleted, which
     /// only a full rescan catches reliably.
     Folder,
@@ -81,6 +87,15 @@ pub fn classify(root: &Path, path: &Path) -> Kind {
     let rel_s = rel.to_string_lossy().replace('\\', "/");
     if rel_s == ".obsidian/graph.json" {
         return Kind::GraphSettings;
+    }
+    let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    if rel.parent().is_some_and(workspace::is_scanned) {
+        if write::kept_for(name).is_some() {
+            return Kind::Kept;
+        }
+        if write::is_staged(name) {
+            return Kind::Staged;
+        }
     }
     if !workspace::is_scanned(rel) {
         return Kind::Ignored;

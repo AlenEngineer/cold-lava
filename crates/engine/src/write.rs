@@ -7,6 +7,7 @@
 //! the new file goes in by a swap or a rename that never replaces (`os_rename`), and what came
 //! out is checked.
 
+mod find;
 mod kept;
 mod lock;
 mod name;
@@ -20,14 +21,29 @@ use std::path::{Path, PathBuf};
 
 use name::{beside, reserved};
 
+pub(crate) use kept::kept_for;
+
+/// Whether `name` is a staged write's (`name::staged_for`), live or left by a killed save.
+pub(crate) fn is_staged(name: &str) -> bool {
+    name::staged_for(name).is_some()
+}
+
+/// Whether `name` is one a text outside its file goes under: a kept text's or a staged
+/// write's, by the name alone.
+pub(crate) fn names_outside(name: &str) -> bool {
+    kept_for(name).is_some() || is_staged(name)
+}
+pub use find::{Outside, find as find_kept};
+
 #[derive(Debug)]
 pub enum WriteError {
     /// The file's content isn't what the caller read earlier: someone else changed it.
     Changed(PathBuf),
     /// Another write landed at the path (the first) while this one was under way, and a text
     /// taken out of the file couldn't be put back: it is kept in the second path, a hidden
-    /// file beside it named `.Name.cold-lava-kept-…` (`kept::kept_name`). It is never the
-    /// caller's own old text or this write's. Read the file again: this write may or may not
+    /// file beside it named `.Name.cold-lava-kept-…` (`kept::kept_name`), which the core
+    /// lists (`find_kept`, `workspace/kept`). It is never the caller's own old text or this
+    /// write's. Read the file again: this write may or may not
     /// be in it. Not "read again" alone: a text now sits outside the file (gateway `kept`).
     Kept(PathBuf, PathBuf),
     /// Creating a file where something already is (`taken`).

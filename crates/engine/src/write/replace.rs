@@ -19,7 +19,7 @@ use std::io;
 use std::path::Path;
 
 use super::kept::keep;
-use super::name::{beside, reserved};
+use super::name::{self, reserved};
 use super::{WriteError, io_err, lock, os_rename, staged, unstaged};
 
 /// Where a test lands another write in `checked`: after the compare (`compared`), and after the
@@ -170,8 +170,8 @@ fn swap_back(out: &Path, file: &Path, there: &[u8]) -> Round {
 }
 
 /// `checked` where the file system can't swap (NFS, most FUSE mounts): the file is moved aside
-/// by one plain rename onto a name this write reserved (so it replaces only its own empty
-/// file), so a write after that can't land in it unseen, and compared there; the new text goes
+/// by one plain rename onto a name this write reserved (`name::aside`, so it replaces only its
+/// own empty file, and a killed save's leftover there reads as the file's only text), so a write after that can't land in it unseen, and compared there; the new text goes
 /// in only where nothing is (`os_rename::no_replace`). The path holds no file for that moment.
 /// What was moved aside goes back where nothing is; when something is at the path by then, it
 /// is removed if it is `expected`, and kept otherwise (`keep`). Left open where the file system
@@ -184,7 +184,7 @@ pub(super) fn aside(
     new: &Path,
     expected: &[u8],
 ) -> Result<(), WriteError> {
-    let old = reserved(file, beside).map_err(|e| unstaged(new, io_err(path)(e)))?;
+    let old = reserved(file, name::aside).map_err(|e| unstaged(new, io_err(path)(e)))?;
     if let Err(e) = std::fs::rename(file, &old) {
         let _ = std::fs::remove_file(&old);
         return Err(unstaged(new, gone(path, e)));

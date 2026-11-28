@@ -7,7 +7,8 @@ use crate::view::{Content, ViewId};
 use cold_lava_engine::act::{self, Ask, Reply};
 use cold_lava_engine::core::Core;
 use cold_lava_engine::files::{
-    self, Create, Created, Deleted, Folder, Listed, Restore, Restored, Stat, Text, Written,
+    self, Create, Created, Deleted, Folder, KeptTexts, Listed, Restore, Restored, Stat, Text,
+    Written,
 };
 use cold_lava_engine::gateway::{self, Answer, Edit, Found, Query, Reason, Select, SubId};
 use cold_lava_engine::owner::given::Given;
@@ -340,8 +341,7 @@ impl Host<'_> {
 
     /// `workspace/read`
     pub fn read_file(&mut self, path: &str) -> Result<Text, gateway::Error> {
-        self.files_core(files::extension_of(path), false)?
-            .read_file(path)
+        self.files_core(kind_of(path), false)?.read_file(path)
     }
 
     /// `workspace/write`: refused unless the file is still the version `expect`.
@@ -370,7 +370,7 @@ impl Host<'_> {
     /// `workspace/stat`: a read, so the owner of the file's kind or `files.read`. A folder
     /// answers with what is in it, so it needs `files.read` whatever it is called.
     pub fn stat_file(&mut self, path: &str) -> Result<Stat, gateway::Error> {
-        let core = self.files_core(files::extension_of(path), false)?;
+        let core = self.files_core(kind_of(path), false)?;
         let stat = core.stat_file(path)?;
         if stat.inside.is_some() {
             self.may(Permission::FilesRead)?;
@@ -399,10 +399,26 @@ impl Host<'_> {
             .restore_file(name, restore)
     }
 
+    /// `workspace/kept`: the texts kept outside their files, of every kind, so it needs
+    /// `files.read`.
+    pub fn kept_texts(&mut self) -> Result<KeptTexts, gateway::Error> {
+        Ok(self.core(Permission::FilesRead)?.kept_texts())
+    }
+
     /// `workspace/create-folder`: a folder has no kind, so it needs `files.write`.
     pub fn create_folder(&mut self, path: &str) -> Result<Folder, gateway::Error> {
         let name = self.name;
         self.core(Permission::FilesWrite)?.create_folder(name, path)
+    }
+}
+
+/// The kind of file at `path` a read is judged by: its suffix, or none for a kept text's
+/// hidden name (`files::names_kept`), whose suffix is not its file's (a killed save's
+/// `.Lava.md.cold-lava-7-0.tmp`), so reading one needs `files.read` whatever its owner owns.
+fn kind_of(path: &str) -> Option<String> {
+    match files::names_kept(path) {
+        true => None,
+        false => files::extension_of(path),
     }
 }
 
