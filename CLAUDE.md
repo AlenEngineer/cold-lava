@@ -501,8 +501,10 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   through that owner: `owner/edits.rs`), is read again and emits
   `Event::ItemEdited` naming who made it. Extensions and screens change items only here.
   A note's edit is `note_edit.rs` (its Markdown owner makes the new text, `write::replace`
-  writes it, the answer is read back), which `Core::edit_item` calls, so the gateway reads no
-  owner and the owners read its messages (`Edit`, `Error`, `Reason`) one way.
+  writes it, the answer is read back), which `Core::edit_item` calls, so the gateway names no
+  owner and the owners read its messages (`Edit`, `Error`, `Reason`) directly. Through
+  `workspace` and `owner::given` (`gateway::answer_line`) the gateway is still in a cycle
+  with them; `tests/one_door.rs` lists the engine's module cycles, and the list only shrinks.
 - `links.rs`: the link graph for `links/query` (every file links come from, where each leads,
   Obsidian's graph colour groups); `links/subscribe` news is queued with the items' news.
 - `files.rs`: the file messages of the workspace gateway (`workspace/read` with a `rev`, which
@@ -567,7 +569,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   extension's half is `shape_ask.rs`: `shape/region` and `shape/gesture` (`Ask`, `Reply`,
   `Answered`, and the `Gesture` an ask carries), answered into `Core::take_shape_answers`. It
   reads none of `core`, `bind` and `act`, which all read it, so the three don't depend on
-  each other in a circle; what a region shows (`Entry`) is `shows.rs`'s.
+  each other in a circle (`tests/one_door.rs` checks it); what a region shows (`Entry`) is
+  `shows.rs`'s. `Gesture`'s methods (`parse`, `starts`, `item`) are all there.
 - `configured.rs`: `Configured`, what a frontend configured for the workspaces it opens (the
   flavour, `[style]`, the layers of types, attribute readings and shapes before a workspace's
   own). Data only, handed to `Core::open` and `workspace::scan`; each part's reader takes it

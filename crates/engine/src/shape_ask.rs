@@ -9,7 +9,7 @@ use serde_json::Value as Json;
 
 use crate::bounded::{GestureSteps, List, Message, RegionItems, Text};
 use crate::problem;
-use crate::shapes::{Shapes, Step, Steps};
+use crate::shapes::{Behaviour, Shapes, Step, Steps};
 use crate::shows::{Entry, Member};
 
 /// Something done to a placed shape, as the frontend saw it.
@@ -66,6 +66,27 @@ impl Gesture {
                 ));
             }
         })
+    }
+
+    /// Whether the `on` entry `b` answers it.
+    pub(crate) fn starts(&self, b: &Behaviour) -> bool {
+        match self {
+            Gesture::Drop { from, to, .. } => {
+                (b.drop.as_ref()).is_some_and(|d| d.from == *from && d.to == *to)
+            }
+            Gesture::Click { on, .. } => b.click.as_ref() == Some(on),
+            Gesture::Key { key } => b.key.as_ref() == Some(key),
+            Gesture::Action { name } => b.action.as_ref() == Some(name),
+        }
+    }
+
+    /// The member it is about: the one dropped or clicked.
+    pub(crate) fn item(&self) -> Option<&str> {
+        match self {
+            Gesture::Drop { item, .. } => Some(item),
+            Gesture::Click { item, .. } => item.as_deref(),
+            _ => None,
+        }
     }
 }
 

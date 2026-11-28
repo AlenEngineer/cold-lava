@@ -45,18 +45,20 @@ pub use protocol::{
 pub use registry::{AGENDA, GRAPH, KEPT, MENU, NVIM, READER, Registry, TABLE};
 
 #[cfg(test)]
-use cold_lava_engine::{act, bind, shapes};
-use cold_lava_engine::{files, gateway, links, matcher, owner, paths, recipe, style, types};
+use cold_lava_engine::{act, bind, shapes, shows};
+use cold_lava_engine::{
+    files, gateway, links, matcher, owner, paths, recipe, shape_ask, style, types,
+};
 use manifest::read_only;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shape_ask::Ask;
     use cold_lava_engine::core::{Core, Jump};
     use cold_lava_engine::files::Create;
     use cold_lava_engine::gateway::{Answer, Edit, News, Query, Reason, Select, SubId};
     use cold_lava_engine::problem::Problem;
-    use cold_lava_engine::shape_ask::Ask;
     use serde::Serialize;
     use serde_json::Value;
     use std::path::PathBuf;
@@ -549,7 +551,7 @@ mod tests {
     }
 
     /// A click on the first volcano, in the region Tally answers for.
-    fn click_on_a_volcano(core: &mut Core) -> cold_lava_engine::shape_ask::Gesture {
+    fn click_on_a_volcano(core: &mut Core) -> crate::shape_ask::Gesture {
         let q = crate::gateway::Query {
             select: Select {
                 kind: "volcano".into(),
@@ -557,7 +559,7 @@ mod tests {
             },
             page: Default::default(),
         };
-        cold_lava_engine::shape_ask::Gesture::Click {
+        crate::shape_ask::Gesture::Click {
             on: "count".into(),
             item: Some(core.query_items(&q).unwrap().items.remove(0).id),
         }
@@ -567,10 +569,10 @@ mod tests {
     fn an_extension_answers_for_its_shape_within_its_permissions() {
         use crate::act::Acted;
         use crate::bind::{Binding, Source};
+        use crate::shape_ask::Answered;
         use ItemsEdit as E;
         use ItemsRead as R;
         use Permission::{ItemsEdit, ItemsRead};
-        use cold_lava_engine::shape_ask::Answered;
         let (dir, shapes) = tally_workspace("ext-shape");
 
         for (permissions, region, clicked) in [

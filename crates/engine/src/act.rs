@@ -19,32 +19,9 @@ use crate::gateway::{Answer, Edit, Error, Op, Reason};
 use crate::problem;
 use crate::recipe;
 use crate::shape_ask::{Ask, Gesture};
-use crate::shapes::{Behaviour, EditStep, Shapes, Step, Steps, Way, fill};
+use crate::shapes::{EditStep, Shapes, Step, Steps, Way, fill};
 use crate::shows::{Member, text_of};
 use crate::workspace::search_key;
-
-impl Gesture {
-    /// Whether the `on` entry `b` answers it.
-    fn starts(&self, b: &Behaviour) -> bool {
-        match self {
-            Gesture::Drop { from, to, .. } => {
-                (b.drop.as_ref()).is_some_and(|d| d.from == *from && d.to == *to)
-            }
-            Gesture::Click { on, .. } => b.click.as_ref() == Some(on),
-            Gesture::Key { key } => b.key.as_ref() == Some(key),
-            Gesture::Action { name } => b.action.as_ref() == Some(name),
-        }
-    }
-
-    /// The member it is about: the one dropped or clicked.
-    fn item(&self) -> Option<&str> {
-        match self {
-            Gesture::Drop { item, .. } => Some(item),
-            Gesture::Click { item, .. } => item.as_deref(),
-            _ => None,
-        }
-    }
-}
 
 /// What a shape's steps ask of the workspace gateway. The core is one (`Direct`); a frontend's
 /// gateway for an extension checks the extension's permissions first.
