@@ -184,8 +184,7 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   a person sees name the kept file first, by its workspace path (`kept_words`, from the root:
   `WriteError::named_from`, or `named_in` for an error passed on; `kept_beside` only where no
   root is known, the edit desk). Every caller classifies a `WriteError` through `Reason::of`
-  (`EditError::written(e, root)` for an edit, with no `From<WriteError>` so the root can't be
-  left out; `EditError::from(gateway::Error)` back), never by matching its variants. `create`
+  (`EditError::from(gateway::Error)` for an edit), never by matching its variants. `create`
   and `move_file` rename with `no_replace`, refused when something is there by then. Left
   open: a program that opened the file before the swap (an open under way counts: an
   in-place writer under load, #443) and writes into it after the compare; and, on a file
@@ -495,7 +494,7 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `gateway.rs`: the item messages of the workspace gateway (`items/query`, `items/subscribe`,
   `items/changed`/`items/reset`, `items/edit` with `set-field` and `toggle`, `types/list`) and
   their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an
-  edit goes through `edit::set_field` or `tasks::toggle` (in a file another owner reads,
+  edit goes through `edit::plan` or `tasks::toggle_text` (in a file another owner reads,
   through that owner: `owner/edits.rs`), is read again and emits
   `Event::ItemEdited` naming who made it. Extensions and screens change items only here.
 - `links.rs`: the link graph for `links/query` (every file links come from, where each leads,
@@ -606,8 +605,7 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 The engine never reads `config.toml`: `config.rs` in the binary parses it and builds the
 engine's `configured::Configured` (the flavour, `[style]`, and the extensions' and the file's
 types, attribute readings and shapes), handed to every `Core::open` and `workspace::scan` the app
-makes and to the commands that read a workspace without one (`edit::set_field`,
-`tasks::toggle_in`). A workspace keeps it (`Workspace::configured`, `Core::configured`) and its
+makes. A workspace keeps it (`Workspace::configured`, `Core::configured`) and its
 item settings and style are read with it, so two cores in one process read their own (#180).
 No engine setting is the process's.
 
