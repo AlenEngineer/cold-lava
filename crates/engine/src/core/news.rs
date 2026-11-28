@@ -1428,6 +1428,41 @@ fn a_follower_of_the_example_workspace_keeps_what_a_query_finds() {
     assert_eq!(h.items("agenda").len(), before);
 }
 
+/// `workspace/write`, `workspace/create` and `workspace/create-folder` are read inside the
+/// call: the next `poll` and a channel hear the same events in the order the calls were made,
+/// and the watcher's later report of the notes is no news.
+#[test]
+fn a_gateway_write_a_create_and_a_new_folder_are_heard_by_poll_and_a_channel_alike() {
+    let mut h = workspace("gateway-files");
+    h.follow("agenda", tasks());
+    let seen = h.stat("Ash.md");
+    let theirs = format!("{ASH}- [ ] Buy a broom\n");
+    h.call(|core| core.write_file("Ash.md", &theirs, &seen))
+        .unwrap();
+    let create = files::Create {
+        at: files::NewFile::At {
+            path: "Pumice.md".into(),
+        },
+        text: "- [ ] Weigh the pumice\n".into(),
+    };
+    h.call(|core| core.create_file(&create)).unwrap();
+    h.call(|core| core.create_folder("tidy", "Samples"))
+        .unwrap();
+
+    let batch = h.deliver();
+    let made = Event::FolderCreated {
+        path: "Samples".into(),
+        by: "tidy".into(),
+    };
+    let events = [changed("Ash"), Event::NoteCreated("Pumice".into()), made];
+    assert_eq!(batch.events, events);
+    assert_eq!(batch.channel, events);
+    assert_eq!(batch.counts("agenda"), [(1, 0, 0), (1, 0, 0)]);
+    h.saw("Ash.md");
+    h.saw("Pumice.md");
+    assert!(h.deliver().is_empty(), "the watcher's report is no news");
+}
+
 /// What a delete and a restore are for the client `by`, as events.
 fn deleted(path: &str, by: &str) -> Event {
     let (path, by) = (path.to_string(), by.to_string());
