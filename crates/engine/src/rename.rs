@@ -804,7 +804,7 @@ mod tests {
     /// (`Core::apply`), whose canvas owner gives their new texts inside the call.
     fn apply_through_owners(ix: &Index, mut plan: Plan) -> Result<(), crate::core::NotApplied> {
         let mut core = crate::core::Core::open(&ix.workspace.root, Default::default()).unwrap();
-        let crate::core::Applying::Now(made) = core.apply(&mut plan) else {
+        let crate::core::Applying::Now(made) = core.apply("test", &mut plan) else {
             panic!("the canvas owner answers at once");
         };
         made

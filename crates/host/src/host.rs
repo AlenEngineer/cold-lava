@@ -216,7 +216,9 @@ impl Host<'_> {
         id: &str,
         options: crate::recipe::Options,
     ) -> Result<String, gateway::Error> {
-        self.core(Permission::FilesWrite)?.run_recipe(id, options)
+        let name = self.name;
+        self.core(Permission::FilesWrite)?
+            .run_recipe(name, id, options)
     }
 
     /// Nothing, when the caller's manifest asks for `needs`; else the refusal, naming it.

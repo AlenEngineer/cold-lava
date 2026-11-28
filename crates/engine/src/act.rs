@@ -57,7 +57,7 @@ impl Gateway for Direct<'_> {
     }
 
     fn run_recipe(&mut self, id: &str, options: recipe::Options) -> Result<String, Error> {
-        self.core.run_recipe(id, options)
+        self.core.run_recipe(self.by, id, options)
     }
 }
 

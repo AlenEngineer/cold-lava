@@ -275,8 +275,8 @@ const WRITES: [&str; 3] = ["trash::", "write::", "Seen::"];
 const GATEWAY_FILES: &str = "files::";
 
 /// Deleting, restoring and making a folder are `Core::delete_file`, `restore_file` and
-/// `create_folder`, asked as `menu`, and the menu's new notes are `Core::create_file`
-/// (#270 B4): nothing in the app names `trash::delete`, `trash::restore` or
+/// `create_folder`, asked as `menu`, a merge's undo is `Core::undo_merge`, and the menu's new
+/// notes are `Core::create_file` (#270 B4): nothing in the app names `trash::delete`, `trash::restore` or
 /// `write::create_dir`, and the menu names no `write::create`. What it still names of the
 /// engine's trash and write functions:
 ///
@@ -303,16 +303,19 @@ fn the_app_deletes_restores_and_makes_folders_through_the_core() {
         "core.restore_file(MENU,",
         "core.create_folder(MENU,",
         "core.create_file(",
+        "core.undo_merge(MENU,",
     ] {
         assert!(home.contains(asked), "the menu asks the core: {asked}");
     }
 }
 
 /// The engine's whole-workspace operations the app still calls itself, each a later group of
-/// #193: duplicate, the undo of a merge or a recipe, the daily note. `main.rs` is the command
-/// line (`cold-lava daily`). A rename, a merge and a recipe are made by the core
-/// (`Core::apply`, #270 B2), and their `apply` is the engine's own, so the compiler refuses
-/// the app a call to it; they stay listed here so that their modules stay guarded.
+/// #193: duplicate, the undo of a recipe, the daily note. `main.rs` is the command line
+/// (`cold-lava daily`). A rename, a merge and a recipe are made by the core (`Core::apply`,
+/// #270 B2), and a merge is undone by it (`Core::undo_merge`, #270 B4), so its delete and
+/// restore name who asked. Their `apply`, and `merge::undo`, are the engine's own, so the
+/// compiler refuses the app a call to them; they stay listed here so that their modules stay
+/// guarded.
 const OPERATIONS: [&str; 7] = [
     "merge::apply(",
     "merge::duplicate(",
@@ -328,7 +331,6 @@ fn the_operations_still_called_directly_are_these() {
     let left = [
         "home.rs: daily::ensure(",
         "home.rs: merge::duplicate(",
-        "home.rs: merge::undo(",
         "home.rs: recipe::undo(",
         "main.rs: daily::ensure(",
     ];
@@ -548,12 +550,12 @@ fn sneaked(code: &str) -> Vec<String> {
 
 /// Nothing goes around the lists: no alias or glob of a module a list is about (`guarded`),
 /// no `std::fs` function that changes files and no listed call imported by name, none of the
-/// gateway's own file functions (`files::delete` and the rest, which are the core's to call),
+/// gateway's own file functions (`files::to_delete` and the rest, which are the core's to call),
 /// no file made or copied another way, and no `Core` taken apart for its `index`
 /// (`let Core { index, .. } = …`).
 #[test]
 fn nothing_goes_around_the_lists() {
-    let own = ["delete", "restore", "create_folder", "create", "replace"];
+    let own = ["to_delete", "restore", "create_folder", "create", "replace"];
     let found = per_file(&sources(), |code| {
         let gateway = named_in(code, GATEWAY_FILES).into_iter();
         let gateway = gateway.filter(|name| own.contains(&name.as_str()));

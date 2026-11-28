@@ -1039,7 +1039,7 @@ fn a_board_isnt_reported_again_after_a_rename() {
 
     let note = core.index.by_rel("Lava").unwrap();
     let mut plan = crate::rename::plan(&core.index, note, "Hot/Lava").unwrap();
-    let made = core.apply(&mut plan);
+    let made = core.apply("test", &mut plan);
     assert!(
         matches!(&made, Applying::Now(Ok(()))),
         "answered at once: {made:?}"
