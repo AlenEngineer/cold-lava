@@ -287,7 +287,7 @@ alone. "Anchor" also names a shape's attach points (docs/shapes.md); here it is 
   when the item had an anchor already and nothing was written, so asking twice writes nothing,
   and `next` is null. `ItemEdited` says "anchored" and names who asked. `cold_lava.py` has
   `anchor(item)`.
-- **Where it goes.** Where the walk reads an item's anchor (`items.rs`): at the end of its last
+- **Where it goes.** Where the walk reads an item's anchor (`owner/markdown/walk.rs`): at the end of its last
   own line, which for a list item or a task is the line before its first child, and for a
   paragraph a type reads is its last line. After every field, so a Tasks or Dataview date stays
   where it was, with one space before it; the blanks and the line ending that close the line

@@ -1,6 +1,6 @@
 //! The bookmark in a note (#190, docs/extensions.md "Anchors, as built"): where an item takes
 //! an anchor, and whether the note reads back with nothing new but it. An anchor is a `^name`
-//! that ends the item's last own line, where the walk reads one (`items.rs`): a list item's
+//! that ends the item's last own line, where the walk reads one (`walk.rs`): a list item's
 //! (a task's) line before its first child, or a paragraph's last line. Every other item has
 //! no place for one in Markdown, and is refused with what to keep instead. A leaf: it reads
 //! items, types, trees and text, and needs serde_json to compare what items say.
@@ -140,7 +140,7 @@ impl Tree {
 /// where it is written. Then the anchor ends a line of text, and nothing around it reads
 /// otherwise: a code block, a table row or a heading's underline would. Only the tree can
 /// tell: the walk reads an item's anchor off the end of its last own line, whatever that line
-/// is (`items.rs`), so it would take a `^name` written after an item's indented code, after
+/// is (`walk.rs`), so it would take a `^name` written after an item's indented code, after
 /// its closing fence or on a callout's empty title as the item's. Which anchors the items have
 /// is the anchor rule's to compare (`items::anchors`).
 pub(super) fn same_tree(
@@ -297,7 +297,7 @@ fields.w = { capture = "w" }
         (made.text, name)
     }
 
-    /// Where the walk reads an item's anchor (`items.rs`): at the end of its last own line,
+    /// Where the walk reads an item's anchor (`walk.rs`): at the end of its last own line,
     /// the one before its first child, after every field, with one space before it. The
     /// blanks that end the line, and its line ending, stay at its end.
     #[test]
@@ -559,7 +559,7 @@ fields.w = { capture = "w" }
 
     /// The ids an anchor moved besides the anchored item's, a later twin's (an item that says
     /// the same under the same parent, after it) and the ids of the items under either, which
-    /// the key rules move (`items::identify`).
+    /// the key rules move (`walk/keys.rs`).
     #[derive(Default)]
     struct Moved {
         /// A typed quote's or callout's whose first line of words the anchored item ends on.

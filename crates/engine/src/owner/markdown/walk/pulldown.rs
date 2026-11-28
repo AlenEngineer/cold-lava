@@ -5,7 +5,7 @@ use super::*;
 use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
 
 /// The items of the note at `note` whose text is `text`, read by pulldown-cmark.
-pub(super) fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
+pub(crate) fn extract(note: &str, text: &str, s: &Settings) -> Vec<Item> {
     if s.templates.is_template(note) {
         return Vec::new();
     }
