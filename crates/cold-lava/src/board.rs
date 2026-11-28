@@ -1172,7 +1172,12 @@ impl Board {
     /// If the file holds a change made elsewhere, merge it into ours.
     /// Returns true when something was merged in.
     fn sync_from_disk(&mut self) -> bool {
-        let Some((bytes, theirs, twins)) = self.read_version() else {
+        let Some(Version {
+            bytes,
+            doc: theirs,
+            twins,
+        }) = self.read_version()
+        else {
             return false;
         };
         let Some(base) = self.take_in(bytes, &theirs, twins) else {
@@ -1230,7 +1235,7 @@ impl Board {
     /// most often a program that rewrites the file in place, caught between emptying and
     /// writing it: merged, it would take away every card and the selection with them (#441).
     /// So it is taken in only once it has stayed blank, unmodified, for `BLANK_SETTLES`.
-    fn read_version(&mut self) -> Option<(Vec<u8>, Doc, Vec<(String, String)>)> {
+    fn read_version(&mut self) -> Option<Version> {
         let bytes = std::fs::read(&self.path).ok()?;
         if bytes == self.disk {
             return None;
@@ -1252,8 +1257,8 @@ impl Board {
                 }
             }
         }
-        let (theirs, twins) = parse(&bytes, &self.path).ok()?;
-        Some((bytes, theirs, twins))
+        let (doc, twins) = parse(&bytes, &self.path).ok()?;
+        Some(Version { bytes, doc, twins })
     }
 
     /// Takes in the file's version, just read, the one place an open board does: the `bytes`,
@@ -3345,6 +3350,14 @@ fn as_written(doc: &Doc, twins: &HashMap<String, String>) -> Doc {
         theirs(&mut e.to_node);
     }
     doc
+}
+
+/// A version of the board's file, read: its bytes, the canvas in them and their twins
+/// (`parse`).
+struct Version {
+    bytes: Vec<u8>,
+    doc: Doc,
+    twins: Vec<(String, String)>,
 }
 
 /// Whether two canvases say the same, whatever bytes each was read from. Two that can't be
