@@ -35,7 +35,7 @@ mod registry;
 
 pub use cold_lava_views::view;
 
-pub use deliver::{Deliveries, Delivery, FRAME, Next, Step};
+pub use deliver::{Deliveries, Delivery, Next, Step, after_sync, frame};
 pub use extension::Extension;
 pub use host::{ExtId, Host};
 pub use manifest::{CommandSpec, FileType, Manifest, Permission, Role, Shows, Spec, namespaced};

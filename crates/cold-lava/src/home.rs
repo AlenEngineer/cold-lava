@@ -13,7 +13,7 @@ use crate::ext::view::{Happened, ViewId, ViewNews};
 use crate::ext::{
     AGENDA, CommandRequest, Deliveries, EditorRequest, Effect, ExtId, Extension, FileNews,
     FilePreview, GRAPH, Host, MENU, Manifest, Next, PaneId, PaneNews, PaneSpec, READER, Registry,
-    Step, TABLE,
+    Step, TABLE, after_sync,
 };
 use crate::frontmatter::{self, TagEdit};
 use crate::gateway::{Answer, Edit, Op, Reason, Ticket};
@@ -1009,7 +1009,7 @@ impl Home {
 
     /// Answer what extensions in processes asked since the last frame.
     fn poll_extensions(&mut self) {
-        self.deliver(Deliveries::new(&[Step::Polls], &[]));
+        self.deliver(Deliveries::new(&[Step::Polls]));
         let registry = &self.registry;
         self.views.retain_owners(|e| registry.running(e));
         self.forget_closed_views();
@@ -2008,7 +2008,7 @@ impl Home {
     /// `rescan_now` (`reload_tree`), which has no event for `poll`. `rescan-news.drive` checks
     /// the latter from the screen.
     fn deliver_item_news(&mut self) {
-        self.deliver(Deliveries::new(&[Step::News], &[]));
+        self.deliver(Deliveries::new(&[Step::News]));
     }
 
     /// Take a frame's `steps` (the host's `Deliveries`): call each extension it names and do
@@ -2016,19 +2016,16 @@ impl Home {
     /// answer to an edit one of the menu's screens made shows on the status line when it failed.
     fn deliver(&mut self, mut steps: Deliveries) {
         loop {
-            let Some(core) = self.core.as_mut() else {
-                return;
-            };
-            let board = self.board.is_some();
-            let ours = |client: &str| board && client == crate::bind::OWNER;
-            let Some(next) = steps.next(&self.registry, core, ours) else {
+            let on_board = self.board.is_some();
+            let ours = |client: &str| on_board && board::Board::hears(client);
+            let Some(next) = steps.next(&self.registry, self.core.as_mut(), ours) else {
                 return;
             };
             match next {
                 Next::Call(ext, delivery) => self.call(ext, |e, host| delivery.send(e, host)),
-                Next::News { client, news } => {
+                Next::News { news, .. } => {
                     if let (Some(b), Some(core)) = (self.board.as_mut(), self.core.as_mut()) {
-                        b.heard(core, &client, &news);
+                        b.heard(core, &news);
                     }
                 }
                 Next::Edited { answer, .. } => {
@@ -2124,10 +2121,7 @@ impl Home {
             }
         }
         self.previews_changed(events);
-        self.deliver(Deliveries::new(
-            &[Step::Files, Step::Owners, Step::Edited],
-            events,
-        ));
+        self.deliver(Deliveries::new(&after_sync(events)));
         self.deliver_relinked();
     }
 
@@ -2285,7 +2279,7 @@ impl Home {
 
     /// Hand each owner the `file/read` and `file/edit` requests the core has for it.
     fn ask_owners(&mut self) {
-        self.deliver(Deliveries::new(&[Step::Owners], &[]));
+        self.deliver(Deliveries::new(&[Step::Owners]));
     }
 
     /// The shown note, parsed.

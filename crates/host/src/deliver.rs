@@ -6,7 +6,8 @@
 //!
 //! A frontend calls each extension it is given (`Next::Call`) and applies what that extension
 //! asked for before it asks for the next one. A frontend that applies effects only after the
-//! whole frame calls `Registry::frame`.
+//! whole frame calls `Registry::frame`. With no core (no workspace open, or its folder gone),
+//! only the polls run, so extensions are still answered and their crashes still noticed.
 
 use crate::extension::Extension;
 use crate::host::{ExtId, Host};
@@ -21,11 +22,11 @@ use std::collections::VecDeque;
 
 /// One step of a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Step {
+pub enum Step<'a> {
     /// `items/changed`, `items/reset` and `links/changed` to the subscription's owner.
     News,
-    /// `file/changed` to the owner of each file that changed on disk.
-    Files,
+    /// `file/changed` to the owner of each file these events say changed on disk.
+    Files(&'a [Event]),
     /// `file/read`, then `file/edit`, to the owner the core asks.
     Owners,
     /// The answer to an `items/edit` that was answered `Later`, to whoever made it.
@@ -34,14 +35,25 @@ pub enum Step {
     Polls,
 }
 
-/// A frame's steps in order, after the frontend took the core's events (`Core::poll`).
-pub const FRAME: [Step; 5] = [
-    Step::News,
-    Step::Files,
-    Step::Owners,
-    Step::Edited,
-    Step::Polls,
-];
+/// A frame's steps in order, `events` being the core's since the last frame (`Core::poll`).
+/// `Registry::frame` runs it. The menu doesn't: it polls every frame, and delivers the news
+/// and then `after_sync` after each sync with the core, which happens only when the core had
+/// something to say (and again inside a frame, when an extension's edit is read back).
+pub fn frame(events: &[Event]) -> [Step<'_>; 5] {
+    [
+        Step::News,
+        Step::Files(events),
+        Step::Owners,
+        Step::Edited,
+        Step::Polls,
+    ]
+}
+
+/// What the menu delivers after a sync with the core has taken `events` and handed out the
+/// news: a frame's steps between the news and the polls.
+pub fn after_sync(events: &[Event]) -> [Step<'_>; 3] {
+    [Step::Files(events), Step::Owners, Step::Edited]
+}
 
 /// What one call to an extension hands it.
 #[derive(Debug)]
@@ -83,9 +95,8 @@ pub enum Next {
 }
 
 /// The steps of a frame not yet taken, and what the one under way still has to hand out.
-pub struct Deliveries {
-    steps: VecDeque<Step>,
-    changed: Vec<String>,
+pub struct Deliveries<'a> {
+    steps: VecDeque<Step<'a>>,
     waiting: VecDeque<Waiting>,
 }
 
@@ -99,16 +110,11 @@ enum Waiting {
     Poll(ExtId),
 }
 
-impl Deliveries {
-    /// `steps` in order, `events` being what the core said since the last frame.
-    pub fn new(steps: &[Step], events: &[Event]) -> Deliveries {
-        let changed = events.iter().filter_map(|e| match e {
-            Event::FileChanged(rel) => Some(rel.clone()),
-            _ => None,
-        });
+impl<'a> Deliveries<'a> {
+    /// `steps` in order.
+    pub fn new(steps: &[Step<'a>]) -> Deliveries<'a> {
         Deliveries {
             steps: steps.iter().copied().collect(),
-            changed: changed.collect(),
             waiting: VecDeque::new(),
         }
     }
@@ -116,33 +122,43 @@ impl Deliveries {
     /// What to do next, or `None` when the steps are done. `ours` says which clients' item
     /// news the frontend takes itself. Item news nobody holds stops its subscription, a
     /// `file/edit` whose owner isn't loaded is answered that it isn't, and a `file/read` of
-    /// one is dropped.
+    /// one is dropped. With no `core`, only `Step::Polls` hands anything out.
     pub fn next(
         &mut self,
         registry: &Registry,
-        core: &mut Core,
+        mut core: Option<&mut Core>,
         ours: impl Fn(&str) -> bool,
     ) -> Option<Next> {
         loop {
             let Some(waiting) = self.waiting.pop_front() else {
                 let step = self.steps.pop_front()?;
-                self.take(step, registry, core);
+                self.take(step, registry, core.as_deref_mut());
                 continue;
             };
-            if let Some(next) = route(waiting, registry, core, &ours) {
+            if let Some(next) = route(waiting, registry, core.as_deref_mut(), &ours) {
                 return Some(next);
             }
         }
     }
 
-    fn take(&mut self, step: Step, registry: &Registry, core: &mut Core) {
+    fn take(&mut self, step: Step<'a>, registry: &Registry, core: Option<&mut Core>) {
         let waiting = &mut self.waiting;
+        if step == Step::Polls {
+            waiting.extend(registry.ids().map(Waiting::Poll));
+            return;
+        }
+        let Some(core) = core else {
+            return;
+        };
         match step {
             Step::News => {
                 let news = core.take_item_news().into_iter();
                 waiting.extend(news.map(|(client, news)| Waiting::News(client, news)));
             }
-            Step::Files => waiting.extend(self.changed.drain(..).map(Waiting::File)),
+            Step::Files(events) => waiting.extend(events.iter().filter_map(|e| match e {
+                Event::FileChanged(rel) => Some(Waiting::File(rel.clone())),
+                _ => None,
+            })),
             Step::Owners => {
                 let (reads, edits) = (core.take_reads(), core.take_file_edits());
                 waiting.extend(reads.into_iter().map(|(o, r)| Waiting::Read(o, r)));
@@ -152,21 +168,21 @@ impl Deliveries {
                 let edited = core.take_edited().into_iter();
                 waiting.extend(edited.map(|(by, t, a)| Waiting::Edited(by, t, Box::new(a))));
             }
-            Step::Polls => waiting.extend(registry.ids().map(Waiting::Poll)),
+            Step::Polls => {}
         }
     }
 }
 
 impl Registry {
-    /// One frame (`FRAME`), for a frontend that applies what the extensions asked
+    /// One frame (`frame`), for a frontend that applies what the extensions asked
     /// for once it is over: each effect with the extension that asked for it, in order.
     /// `events` are the core's since the last frame. The frontend has no clients of its own
     /// here: item news only extensions hold, and an answer to an `items/edit` none made is
     /// dropped.
     pub fn frame(&mut self, core: &mut Core, events: &[Event]) -> Vec<(ExtId, Effect)> {
-        let mut frame = Deliveries::new(&FRAME, events);
+        let mut steps = Deliveries::new(&frame(events));
         let mut asked = Vec::new();
-        while let Some(next) = frame.next(self, core, |_| false) {
+        while let Some(next) = steps.next(self, Some(&mut *core), |_| false) {
             if let Next::Call(ext, delivery) = next {
                 let effects = self.call(ext, Some(core), |e, host| delivery.send(e, host));
                 asked.extend(effects.into_iter().map(|effect| (ext, effect)));
@@ -176,11 +192,12 @@ impl Registry {
     }
 }
 
-/// Who `waiting` goes to, or `None` when it was dealt with here.
+/// Who `waiting` goes to, or `None` when it was dealt with here. What came from a core is
+/// dropped when there is no core any more.
 fn route(
     waiting: Waiting,
     registry: &Registry,
-    core: &mut Core,
+    core: Option<&mut Core>,
     ours: &impl Fn(&str) -> bool,
 ) -> Option<Next> {
     match waiting {
@@ -191,14 +208,14 @@ fn route(
             match registry.by_name(&client) {
                 Some(ext) => Some(Next::Call(ext, Delivery::Items(news))),
                 None => {
-                    core.unsubscribe_items(&client, news.subscription());
+                    core?.unsubscribe_items(&client, news.subscription());
                     None
                 }
             }
         }
         Waiting::File(path) => {
             let (owner, _) = registry.owner_of(&path)?;
-            let rev = read::rev_at(core.root(), &path);
+            let rev = read::rev_at(core?.root(), &path);
             Some(Next::Call(
                 owner,
                 Delivery::File(FileNews::Changed { path, rev }),
@@ -211,7 +228,7 @@ fn route(
             Some(ext) => Some(Next::Call(ext, Delivery::Edit(edit))),
             None => {
                 let why = Err(format!("{owner} isn't loaded"));
-                core.file_edited(&owner, &edit.path, &edit.rev, why);
+                core?.file_edited(&owner, &edit.path, &edit.rev, why);
                 None
             }
         },
@@ -297,9 +314,9 @@ mod tests {
         std::fs::write(dir.join("Plan.md"), "- [ ] Pay rent\n- [ ] Call\n").unwrap();
         let events = core.note_changed_now(&dir.join("Plan.md"));
 
-        let mut frame = Deliveries::new(&FRAME, &events);
+        let mut steps = Deliveries::new(&frame(&events));
         let mut ours = Vec::new();
-        while let Some(next) = frame.next(&registry, &mut core, |c| c == "board") {
+        while let Some(next) = steps.next(&registry, Some(&mut core), |c| c == "board") {
             match next {
                 Next::Call(ext, d) => {
                     drop(registry.call(ext, Some(&mut core), |e, h| d.send(e, h)))
@@ -319,5 +336,32 @@ mod tests {
             "nobody held it, so it stopped"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_frame_with_no_core_still_polls_every_extension() {
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let fakes = ["one", "two"].map(|name| {
+            let heard = Rc::clone(&heard);
+            Box::new(Heard { name, heard }) as Box<dyn Extension>
+        });
+        let mut registry = Registry::new(fakes.into());
+        let mut steps = Deliveries::new(&frame(&[]));
+        while let Some(next) = steps.next(&registry, None, |_| false) {
+            let Next::Call(ext, d) = next else {
+                panic!("with no core, only extensions are called");
+            };
+            drop(registry.call(ext, None, |e, h| d.send(e, h)));
+        }
+        assert_eq!(*heard.borrow(), ["one poll", "two poll"]);
+    }
+
+    #[test]
+    fn a_frame_is_the_news_then_what_follows_a_sync_then_the_polls() {
+        let events = [Event::FileChanged("Rows.csv".into())];
+        let mut menu = vec![Step::News];
+        menu.extend(after_sync(&events));
+        menu.push(Step::Polls);
+        assert_eq!(frame(&events).to_vec(), menu);
     }
 }
