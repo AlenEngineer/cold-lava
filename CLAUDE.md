@@ -269,8 +269,9 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   character references. `markdown/tag_name.rs` is what a tag's name is (the patterns that
   find `#tag`, `is_number`, and `is_name` for a name given on its own), the one rule the
   tree, the reader, the frontmatter's `tags`, the tag dialog and rename-tag ask (#272, D-4).
-  Two places don't ask it yet, recorded on #272: the matcher's frontmatter gate and its
-  `Value::Tag` (which a `set-field` on a tag field uses). Don't add a third.
+  Two places don't ask it yet, recorded on #272: the note's frontmatter gate the Markdown
+  owner hands the matcher (`walk/typed.rs`, `note_of`) and the matcher's `Value::Tag` (which a
+  `set-field` on a tag field uses). Don't add a third.
 - `cst.rs` (`cst/block.rs`, `cst/inline.rs`): the lossless syntax tree of a note on `rowan`
   (every byte a token; printing it gives the note back), blocks found line by line as
   CommonMark does and inlines per line, each gated by the flavour's `Syntax`. `Tree::edit`
@@ -296,14 +297,18 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   `tasks::toggle_text` and rename's link rewriting, each reached through it. Its walk
   (`walk.rs`, the caller, and the `Walk` tool it drives) reads a note's items in one walk
   through its tree (`cst::read`) in the workspace's flavour; `walk/typed.rs` matches the types
-  over what it found, `walk/keys.rs` makes each item's key (block id, heading path, or text
-  hash under the parent, then `.n` for the nth repeat; a typed aside's set apart,
-  `keys::aside`), `walk/ids.rs` gives each item its id from its key (`identity::id`) and its
+  over what it found (it reads the note the matcher is handed: its frontmatter, the tags and
+  links in it, `note_of`), `walk/keys.rs` makes each item's key (block id, heading path, or
+  text hash under the parent, then `.n` for the nth repeat; a typed item's from its shape's
+  `key` fields or its words, `keys::typed`; a typed aside's set apart, `keys::aside`), `walk/ids.rs` gives each item its id from its key (`identity::id`) and its
   rev from its lines, or a twin's (`walk/twins.rs`), and `walk/block_text.rs` is where a
   block's words are (leaves). Only `Item`, `Data` and `Settings` cross from the walk to the
-  core, and calls go one way: the core asks the owner. The matcher's text readings
-  (Dataview fields, markers, checkboxes, `^id`) and its value parsing are still in
-  `matcher.rs`, the second half of step D-3 (#272). Its `links` is the one reading of a note's links, from
+  core, and calls go one way: the core asks the owner. What a type's sources read in a
+  note's text by Markdown's rules (Dataview's fields, a checkbox, the checkbox that is the
+  `checkbox` attribute, the block id that ends a block) is `owner/markdown/reads.rs`, leaves
+  the matcher asks for a note's blocks only; a marker, a flag and a pattern read plain
+  characters, a piece's too, and stay the matcher's. Value parsing (`matcher::parse`) is
+  still in `matcher.rs` (#272, D-3). Its `links` is the one reading of a note's links, from
   the tree: `read` (backlinks, the graph), `link_targets` (tidy), `relink` (renames, which
   rewrite a reference link in its definition and no byte outside a target) and an item's own
   `links` all take them from it. Don't match links or tags with a pattern of your own. Read
@@ -446,8 +451,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   `is_name`) are `sources.rs`, a leaf but for `alphabet::Role`, and where a layer of definitions came from (`Origin`:
   types, attribute readings and shapes are loaded in layers) is `origin.rs`, another.
   `types.rs` and `owner/markdown/attributes.rs` both read them there, so neither depends on
-  the other for them (`types.rs` re-exports the ones `matcher.rs` and the table's
-  `Source` still name through it, #343). A shape's `on` (`sources::On`) is a role or
+  the other for them (`types.rs` re-exports the ones the table's `Source` still names
+  through it, #343). A shape's `on` (`sources::On`) is a role or
   `inline` (a reading of a piece's text, not a role). The names `on` had before (`note`,
   `heading`, `paragraph`, `list-item`, `table-row`, `quote`, `code`) are aliases
   (`On::alias`): they always read, a definition's JSON still says `on` in them with `role`
@@ -537,7 +542,7 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   list (`.obsidian/bookmarks.json`, removed in #373): a bookmark in cold-lava's story is the
   anchor on a passage (#190), and a saved list is for an extension to offer.
 - `tasks_settings.rs`: Obsidian Tasks settings (statuses, global filter), a leaf that `items`,
-  `tasks`, `style` and the owners read (`tasks.rs` re-exports it for `matcher.rs`, #343).
+  `tasks`, `style` and the owners read (`tasks.rs` re-exports it for the binary's `owned.rs`, #343).
 - `tasks.rs`, `daily.rs`: `agenda` and `toggle` on items of the built-in `task` type
   (`types/task.toml`, read by `Task::of`); Daily notes settings, moment.js date formats.
 - `shapes.rs` (paused, see `crates/canvas`). Shape definitions (docs/shapes.md): `[[shapes]]`
@@ -571,12 +576,15 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `rel_path.rs`: a path as the workspace names it (relative to its root, `/` between
   folders). A leaf. The menu asks it; the engine's and the binary's other copies of the rule
   are listed on #365.
+- `words.rs`: `push`, a text's words joined one space apart, whatever was between them: a
+  type's `rest`, a list item's text, a piece's words. A leaf (the binary's `words.rs`, with
+  `plural`, is another).
 - `identity.rs`: the hash every id and rev is made with (`fnv`, FNV-1a; `hash`, as 16 hex
   digits), the last step of every id (`id`: the file, the kind and the key with a NUL between
   each two, hashed), a rev of text (`line_id`) and a twin's (`twin_rev`, `walk/twins.rs`: of
   its lines, how many twins there are and, under a twin, that twin's rev). A leaf. Each owner
   makes its own key and calls `id` itself: a note's items in the Markdown owner
-  (`owner/markdown/walk/keys.rs`, then `walk/ids.rs`; a typed item's key in `matcher.rs`),
+  (`owner/markdown/walk/keys.rs`, a typed item's too, then `walk/ids.rs`),
   an owner's pieces and typed items from the place it gave (`owner/given.rs`). Changing a key moves ids as surely as changing
   `identity.rs`, and either is the owner's decision; its tests pin ids given before.
 - `bounded.rs`: the types another program's answer is held in (`file/read`, `file/edit`,

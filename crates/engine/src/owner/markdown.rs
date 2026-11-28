@@ -21,6 +21,7 @@ use std::ops::Range;
 
 mod anchor;
 pub mod attributes;
+pub(crate) mod reads;
 mod walk;
 
 pub use walk::items;

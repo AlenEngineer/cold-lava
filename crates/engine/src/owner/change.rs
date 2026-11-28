@@ -191,7 +191,7 @@ fn set(p: &Piece, typed: &Typed, field: &str, value: &Json, s: &Settings) -> Res
     let all_show = |runs: &[Run], what: &str| {
         let all = words(runs);
         let mut seen = String::new();
-        crate::matcher::push_words(&mut seen, &shown);
+        crate::words::push(&mut seen, &shown);
         if all == seen {
             return Ok(());
         }

@@ -10,8 +10,9 @@
 //! frontmatter's `tags` is a tag whatever its characters, unless it `is_number`.
 //!
 //! Two more places still decide what a tag is without asking this module, recorded on #272
-//! for D-4's later steps: the matcher's note gate (`matcher.rs`, `Note::new`, which reads the
-//! frontmatter's `tags` and `tag` with no number rule), and the matcher's `Value::Tag`
+//! for D-4's later steps: the note gate the Markdown owner hands the matcher
+//! (`owner/markdown/walk/typed.rs`, `note_of`, which reads the frontmatter's `tags` and `tag`
+//! with no number rule), and the matcher's `Value::Tag`
 //! (`matcher::parse`: not empty, no whitespace), which gates a `set-field` on a tag field and
 //! so can write `#123`, which the tree doesn't read as a tag.
 

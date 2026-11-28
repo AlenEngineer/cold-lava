@@ -1,6 +1,8 @@
-//! Matching loaded types against a note's blocks (docs/extensions.md, "Types"). `items::extract`
-//! reads a note in one pass and hands each block here; a `Matcher` says which type it is, if
-//! any, and reads its fields with the byte span of every value.
+//! Matching loaded types against a note's blocks (docs/extensions.md, "Types"). The Markdown
+//! owner's walk reads a note in one pass and hands each block here; a `Matcher` says which type
+//! it is, if any, and reads its fields with the byte span of every value. What a source reads
+//! by Markdown's rules (Dataview's fields, a checkbox, the block id) is the owner's
+//! (`owner::markdown::reads`), and so are the note handed in and a typed item's key.
 //!
 //! A note is gated once (folder, tags, frontmatter), and a block is only checked against the
 //! shapes for its primitive that passed. One type wins per note and per block: higher
@@ -19,9 +21,12 @@ use serde_json::Value as Json;
 use crate::daily;
 use crate::frontmatter::{self, Frontmatter};
 use crate::markdown::{self, Flavour, Syntax};
-use crate::owner::markdown as markdown_owner;
+use crate::origin::Origin;
 use crate::owner::markdown::attributes::{Flat, Readings};
-use crate::types::{InlineKind, NotePart, On, Origin, SectionPart, Source, Type, Types, Value};
+use crate::owner::markdown::reads;
+use crate::sources::{InlineKind, NotePart, On, SectionPart, Source};
+use crate::types::{Type, Types, Value};
+use crate::words;
 
 /// What this matcher reads; shapes on `verbatim` wait.
 const READ: &[On] = &[
@@ -291,7 +296,7 @@ impl Matcher {
                     pattern: shape
                         .pattern
                         .as_deref()
-                        .and_then(|p| crate::types::compile(p).ok()),
+                        .and_then(|p| crate::sources::compile(p).ok()),
                     key: shape.key.iter().filter_map(|k| field(k)).collect(),
                     required: shape.required.iter().filter_map(|k| field(k)).collect(),
                     captures: fields
@@ -402,8 +407,8 @@ impl Matcher {
             .collect()
     }
 
-    /// The note's own type, if one matches.
-    pub fn note(&self, gate: &[Vec<bool>], note: &Note) -> Option<(Typed, String)> {
+    /// The note's own type, if one matches, and its shape's `key` fields.
+    pub fn note(&self, gate: &[Vec<bool>], note: &Note) -> Option<(Typed, &[usize])> {
         let block = Block {
             on: On::Document,
             text: note.body.0,
@@ -418,8 +423,9 @@ impl Matcher {
         self.block(gate, note, &block)
     }
 
-    /// The block's type and its key, if one matches.
-    pub fn block(&self, gate: &[Vec<bool>], note: &Note, b: &Block) -> Option<(Typed, String)> {
+    /// The block's type, if one matches, and its shape's `key` fields (indexes in `fields`),
+    /// which its owner makes the item's key of.
+    pub fn block(&self, gate: &[Vec<bool>], note: &Note, b: &Block) -> Option<(Typed, &[usize])> {
         let slot = slot(b.on)?;
         let mut passing: Vec<(usize, usize, Option<regex::Captures>)> = Vec::new();
         for &(t, s) in &self.by_on[slot] {
@@ -445,29 +451,27 @@ impl Matcher {
         // gives way to the next.
         passing.sort_by(|a, b| self.better((b.0, b.1), (a.0, a.1)));
         passing.into_iter().find_map(|(t, s, caps)| {
-            let (typed, key) = self.read(t, s, caps, note, b);
+            let typed = self.read(t, s, caps, note, b);
             let has = |&f: &usize| match &typed.fields[f] {
                 Json::Null => false,
                 Json::Array(a) => !a.is_empty(),
                 _ => true,
             };
-            self.types[t].shapes[s]
-                .required
-                .iter()
-                .all(has)
-                .then_some((typed, key))
+            let shape = &self.types[t].shapes[s];
+            (shape.required.iter().all(has)).then_some((typed, shape.key.as_slice()))
         })
     }
 
-    /// Every match of an inline type in a block's text, in order, with its range in that text.
-    /// A match that touches `code` (ranges in `src`: code spans, fences, math) doesn't count.
+    /// Every match of an inline type in a block's text, in order, with its shape's `key`
+    /// fields and its range in that text. A match that touches `code` (ranges in `src`: code
+    /// spans, fences, math) doesn't count.
     pub fn inline(
         &self,
         gate: &[Vec<bool>],
         note: &Note,
         b: &Block,
-    ) -> Vec<(Typed, String, Range<usize>)> {
-        let mut found: Vec<(usize, Typed, String, Range<usize>)> = Vec::new();
+    ) -> Vec<(Typed, &[usize], Range<usize>)> {
+        let mut found: Vec<(usize, Typed, &[usize], Range<usize>)> = Vec::new();
         let Some(slot) = slot(On::Inline) else {
             return Vec::new();
         };
@@ -483,8 +487,8 @@ impl Matcher {
                 if whole.is_empty() || b.in_code(&whole) || again {
                     continue;
                 }
-                let (typed, key) = self.read(t, s, Some(caps), note, b);
-                found.push((t, typed, key, whole));
+                let typed = self.read(t, s, Some(caps), note, b);
+                found.push((t, typed, shape.key.as_slice(), whole));
             }
         }
         found.sort_by_key(|f| f.3.start);
@@ -494,7 +498,7 @@ impl Matcher {
     /// Whether one reading of an attribute finds it on the block (`where.attribute`).
     fn carries(&self, src: &Src, note: &Note, b: &Block) -> bool {
         match src {
-            Src::Box(with) => b.on == On::Item && boxed(b.text, with.as_deref()).is_some(),
+            Src::Box(with) => b.on == On::Item && reads::boxed(b.text, with.as_deref()).is_some(),
             Src::Attribute(attr) => attr.on(b),
             src => read_source(src, None, note, b, &self.daily, &mut Vec::new())
                 .iter()
@@ -531,7 +535,7 @@ impl Matcher {
         caps: Option<regex::Captures>,
         note: &Note,
         b: &Block,
-    ) -> (Typed, String) {
+    ) -> Typed {
         let ty = &self.types[t];
         let shape = &ty.shapes[s];
         let mut typed = Typed {
@@ -583,12 +587,7 @@ impl Matcher {
             self.set(&mut typed, ty, *f, pieces);
         }
         if let Some((f, without)) = rest_field {
-            // A list item's text comes without its block id; a `^x` left on its first line,
-            // when more lines follow, names nothing and is words.
-            if b.on != On::Item {
-                let cut = markdown::split_block_id(b.text);
-                used.extend(cut.map(|c| c.before.len()..c.before.len() + c.written.len()));
-            }
+            used.extend(reads::block_id(b.on, b.text));
             for w in without {
                 used.extend(
                     b.text
@@ -604,40 +603,11 @@ impl Matcher {
             };
             self.set(&mut typed, ty, f, pieces);
         }
-        let key = if shape.key.is_empty() {
-            match b.on {
-                On::Row => b
-                    .cells
-                    .first()
-                    .map(|c| note.src[c.clone()].to_string())
-                    .unwrap_or_default(),
-                On::Document => String::new(),
-                On::Inline => caps
-                    .as_ref()
-                    .and_then(|c| c.get(0))
-                    .map_or("", |m| m.as_str().trim())
-                    .to_string(),
-                _ => b.text.trim().to_string(),
-            }
-        } else {
-            let mut key = String::new();
-            for (n, &f) in shape.key.iter().enumerate() {
-                if n > 0 {
-                    key.push('\u{1f}');
-                }
-                match &typed.fields[f] {
-                    // Text as itself, so a task keyed by its words keeps the id it always had.
-                    Json::String(s) => key.push_str(s),
-                    v => key.push_str(&v.to_string()),
-                }
-            }
-            key
-        };
         // Kept for as long as the note is: no room for values it won't get.
         typed.fields.shrink_to_fit();
         typed.spans.shrink_to_fit();
         typed.place.sources.shrink_to_fit();
-        (typed, key)
+        typed
     }
 
     /// What an attribute the shape asked for (`where.attribute`) was read from is the
@@ -649,7 +619,7 @@ impl Matcher {
         for src in shape.attributes.iter().flatten() {
             match src {
                 Src::Box(with) => {
-                    if let Some((_, end)) = boxed(b.text, with.as_deref()) {
+                    if let Some((_, end)) = reads::boxed(b.text, with.as_deref()) {
                         used.push(0..end + 1);
                     }
                     if let Some(with) = with {
@@ -752,37 +722,15 @@ fn compile_flat(f: &Flat, flavour: &Flavour) -> Src {
     }
 }
 
-/// An item's checkbox as the attribute: one character between brackets, then whitespace or
-/// nothing, and with `with`, only when the text holds it after that.
-fn boxed(text: &str, with: Option<&str>) -> Option<(char, usize)> {
-    let (symbol, end) = markdown_owner::checkbox(text)?;
-    if let Some(with) = with {
-        let after = &text[end + 1..];
-        let space = after.chars().next().map_or(0, char::len_utf8);
-        if !after[space..].contains(with) {
-            return None;
-        }
-    }
-    Some((symbol, end))
-}
-
 fn compile_source(s: &Source) -> Src {
     match s {
         Source::Capture(g) => Src::Capture(g.clone()),
-        Source::Pattern(p) => match crate::types::compile(p) {
+        Source::Pattern(p) => match crate::sources::compile(p) {
             Ok(re) => Src::Pattern(re),
             Err(_) => Src::Later,
         },
         Source::Marker(g) => Src::Marker(g.clone()),
-        Source::Inline(key) => {
-            let k = regex::escape(key);
-            Src::Inline(
-                Regex::new(&format!(
-                    r"(?m)\[{k}::[ \t]*([^\]\n]*)\]|\({k}::[ \t]*([^)\n]*)\)|^[ \t]*{k}::[ \t]*([^\n]*)"
-                ))
-                .expect("an escaped key makes a valid pattern"),
-            )
-        }
+        Source::Inline(key) => Src::Inline(reads::field(key)),
         Source::Flag(g) => Src::Flag(g.clone()),
         Source::Flags(map) => Src::Flags(map.clone()),
         Source::Column(c) => Src::Column(c.clone()),
@@ -818,24 +766,16 @@ pub struct Note<'a> {
 }
 
 impl<'a> Note<'a> {
-    /// The note at `path` with this text, read as `source`; `links` says whether some type
-    /// reads its links, which then start with the frontmatter's.
+    /// The note at `path`, read as `source`, with its frontmatter and where its body starts in
+    /// `src`. Its tags and links are added by whoever read them.
     pub fn new(
         path: &'a str,
-        text: &'a str,
         source: &'a markdown::Source<'a>,
-        links: bool,
+        frontmatter: Option<Frontmatter<'a>>,
+        body_at: usize,
     ) -> Note<'a> {
-        let frontmatter = frontmatter::read(text);
         let src: &str = &source.text;
-        let body_at = match &frontmatter {
-            Some(fm) => src
-                .match_indices('\n')
-                .nth(fm.end_line - 1)
-                .map_or(src.len(), |(i, _)| i + 1),
-            None => 0,
-        };
-        let mut note = Note {
+        Note {
             path: path.split('\0').next().unwrap_or(path),
             src,
             source,
@@ -845,27 +785,7 @@ impl<'a> Note<'a> {
             written: Written::default(),
             frontmatter,
             date: Default::default(),
-        };
-        let (tags, end_line) = match &note.frontmatter {
-            Some(fm) => (
-                ["tags", "tag"]
-                    .iter()
-                    .flat_map(|k| fm.values(k))
-                    .map(|w| w.text.trim_start_matches('#').to_string())
-                    .collect(),
-                fm.end_line,
-            ),
-            None => (Vec::new(), 0),
-        };
-        for t in tags {
-            note.add_tag(&t);
         }
-        if links {
-            for line in text.lines().take(end_line) {
-                note.links.extend(crate::owner::markdown::line_links(line));
-            }
-        }
-        note
     }
 
     pub fn add_tag(&mut self, tag: &str) {
@@ -1091,17 +1011,13 @@ fn read_source<'a>(
             }
             first
         }
-        // Every form has `key::`; most blocks have none.
-        Src::Inline(re) if !text.contains("::") || !re.is_match(text) => Vec::new(),
         Src::Inline(re) => {
             let mut first = Vec::new();
-            for c in re.captures_iter(text) {
-                let whole = c.get(0).unwrap().range();
+            for (whole, value) in reads::fields(re, text) {
                 if b.in_code(&whole) {
                     continue;
                 }
-                let m = (1..=3).find_map(|i| c.get(i)).expect("one form matched");
-                let pieces = found(m.range(), used, whole);
+                let pieces = found(value, used, whole);
                 if first.is_empty() {
                     first = pieces;
                 }
@@ -1220,14 +1136,9 @@ fn read_source<'a>(
             vec![Piece::text(value, None)]
         }
         Src::Checkbox => {
-            let Some(symbol) = text
-                .strip_prefix('[')
-                .and_then(|t| t.chars().next())
-                .filter(|&c| c != '\n' && text[1 + c.len_utf8()..].starts_with(']'))
-            else {
+            let Some((symbol, end)) = reads::checkbox_at_start(text) else {
                 return Vec::new();
             };
-            let end = 1 + symbol.len_utf8();
             used.push(0..end + 1);
             vec![Piece {
                 verbatim: true,
@@ -1235,7 +1146,7 @@ fn read_source<'a>(
             }]
         }
         Src::Box(with) => {
-            let found = (b.on == On::Item).then(|| boxed(text, with.as_deref()));
+            let found = (b.on == On::Item).then(|| reads::boxed(text, with.as_deref()));
             let Some((symbol, end)) = found.flatten() else {
                 return Vec::new();
             };
@@ -1301,22 +1212,12 @@ fn rest_of(text: &str, used: &mut [Range<usize>]) -> String {
     let mut at = 0;
     for r in used.iter() {
         if r.start > at {
-            push_words(&mut out, &text[at..r.start]);
+            words::push(&mut out, &text[at..r.start]);
         }
         at = at.max(r.end);
     }
-    push_words(&mut out, &text[at.min(text.len())..]);
+    words::push(&mut out, &text[at.min(text.len())..]);
     out
-}
-
-/// Adds `text`'s words to `out`, one space between each.
-pub(crate) fn push_words(out: &mut String, text: &str) {
-    for word in text.split_whitespace() {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(word);
-    }
 }
 
 /// A written value as its field's type; `None` when it doesn't parse.
@@ -1429,7 +1330,7 @@ fn duration(text: &str) -> Option<f64> {
 mod tests {
     use super::*;
     use crate::items::{Data, Item, Settings, extract};
-    use crate::tasks::TasksSettings;
+    use crate::tasks_settings::TasksSettings;
     use crate::types::{Layer, load};
     use serde_json::json;
     use std::path::Path;
@@ -2246,7 +2147,7 @@ Survey the rim ~3h, not `~4h`, not~6h.
             fields.text = { rest = { without = "${tasks.global-filter}" } }
             "#,
         );
-        types.fill(&crate::types::Provided {
+        types.fill(&crate::sources::Provided {
             global_filter: "#t(1)".into(),
             ..Default::default()
         });

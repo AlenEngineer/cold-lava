@@ -1,7 +1,6 @@
 //! Where a block's words are in its source, and its text as an item holds it: a heading's, a
 //! list item's, a table row's cells.
 
-use crate::matcher;
 use std::ops::Range;
 
 /// A heading's words in the source: ATX without its `#`s, setext without its underline.
@@ -120,6 +119,6 @@ pub(super) fn list_text(first: &str) -> String {
         .unwrap_or_else(|| t.trim_start_matches(|c: char| c.is_ascii_digit()))
         .trim_start_matches(['.', ')']);
     let mut text = String::with_capacity(t.len());
-    matcher::push_words(&mut text, t);
+    crate::words::push(&mut text, t);
     text
 }

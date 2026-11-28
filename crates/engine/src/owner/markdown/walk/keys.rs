@@ -5,6 +5,9 @@
 use super::Raw;
 use crate::identity;
 use crate::items::Data;
+use crate::matcher::Typed;
+use crate::sources::On;
+use serde_json::Value as Json;
 use std::collections::HashMap;
 
 /// Each item's key, as its owner made it, in the order of its items: the key, what its anchor
@@ -72,4 +75,30 @@ fn anchor_of(raw: &Raw) -> (Option<usize>, String) {
 /// words, of a paragraph or a row that had an id before asides matched.
 pub(super) fn aside(key: &str) -> String {
     format!("aside\u{1f}{key}")
+}
+
+/// A typed item's key, which `of` anchors under its parent: the values of its shape's `key`
+/// fields (indexes in its `fields`), `\u{1f}` between each; with none, the words it is: a
+/// block's text trimmed, a row's first cell as written, an inline match trimmed, and nothing
+/// for a note.
+pub(super) fn typed(typed: &Typed, fields: &[usize], on: On, words: &str) -> String {
+    if fields.is_empty() {
+        return match on {
+            On::Row => words.to_string(),
+            On::Document => String::new(),
+            _ => words.trim().to_string(),
+        };
+    }
+    let mut key = String::new();
+    for (n, &f) in fields.iter().enumerate() {
+        if n > 0 {
+            key.push('\u{1f}');
+        }
+        match &typed.fields[f] {
+            // Text as itself, so a task keyed by its words keeps the id it always had.
+            Json::String(s) => key.push_str(s),
+            v => key.push_str(&v.to_string()),
+        }
+    }
+    key
 }

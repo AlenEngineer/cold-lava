@@ -99,8 +99,9 @@ never lends it to a reader (an extension).
 
 ## Where the story is ahead of the code
 
-- The librarian still reads one language itself: Markdown. The core walks notes into items and
-  the matcher reads their text. A note's `set-field` is checked by Markdown's own read-back
+- The librarian still reads one language itself: Markdown. Markdown's owner walks notes into
+  items and reads Markdown's own forms for the matcher, but the matcher still parses a link
+  value as Markdown (`matcher::parse`). A note's `set-field` is checked by Markdown's own read-back
   (`edit::read_back`), and a tick only by finding a task on its line; neither by `given::same`. Track D (#272) moves Markdown's reading out of the
   core into its owner.
 - A translator can still write its own books without the librarian's check: an owner may save

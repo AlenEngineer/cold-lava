@@ -1,7 +1,7 @@
 //! Identity (docs/foundations.md, 5): the one hash every id and rev is made with, and the last
 //! step of every id (`id`: the file, the kind and the owner's key, hashed). Each owner makes its
 //! own key and calls `id` itself: a note's items in the Markdown owner
-//! (`owner/markdown/walk/keys.rs`, then `ids.rs`; a typed item's key in the matcher), an
+//! (`owner/markdown/walk/keys.rs`, a typed item's key too, then `ids.rs`), an
 //! owner's pieces and typed items from the place the owner gave (`owner/given.rs`). Changing a
 //! key moves ids as surely as changing this module does, and either is the owner's decision.
 //! An id is an address, where the item is now; `anchor` names the anchor the engine writes on an

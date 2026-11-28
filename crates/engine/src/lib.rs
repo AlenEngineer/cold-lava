@@ -43,5 +43,6 @@ pub mod templates;
 pub mod tidy;
 pub mod trash;
 pub mod types;
+pub mod words;
 pub mod workspace;
 pub mod write;

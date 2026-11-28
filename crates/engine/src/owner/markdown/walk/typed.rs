@@ -2,6 +2,7 @@
 //! inline types, and becomes an item or types the item it already is.
 
 use super::{Lines, Pass, Raw, keys};
+use crate::frontmatter;
 use crate::items::{Data, Settings};
 use crate::markdown::Source;
 use crate::matcher;
@@ -30,7 +31,7 @@ pub(super) fn finish(
     if !m.is_empty() {
         let src = lines.src;
         let want_inline = m.reads(On::Inline);
-        let mut found = matcher::Note::new(note, text, source, m.needs_links);
+        let mut found = note_of(note, text, source, m.needs_links);
         for tag in &tags {
             found.add_tag(tag);
         }
@@ -38,7 +39,8 @@ pub(super) fn finish(
         found.written = written;
         let gate = m.gate(&found);
         let mut note_is: Vec<String> = Vec::new();
-        if let Some((typed, key)) = m.note(&gate, &found) {
+        if let Some((typed, fields)) = m.note(&gate, &found) {
+            let key = keys::typed(&typed, fields, On::Document, found.body.0);
             note_is.push(typed.kind.clone());
             note_is.extend(typed.is.iter().cloned());
             raws.push(Raw {
@@ -92,7 +94,15 @@ pub(super) fn finish(
                         },
                     )
                 })
-                .flatten();
+                .flatten()
+                .map(|(typed, fields)| {
+                    let words = match c.on {
+                        On::Row => c.cells.first().map_or("", |cell| &src[cell.clone()]),
+                        _ => &src[c.text.clone()],
+                    };
+                    let key = keys::typed(&typed, fields, c.on, words);
+                    (typed, key)
+                });
             // The item the block is, which its inline items name as their parent.
             let mut host = c.raw;
             if let Some((typed, key)) = matched {
@@ -141,8 +151,9 @@ pub(super) fn finish(
                 code: &code,
                 given: matcher::Given::default(),
             };
-            for (mut typed, key, r) in m.inline(&gate, &found, &block) {
+            for (mut typed, fields, r) in m.inline(&gate, &found, &block) {
                 let written = &block.text[r.clone()];
+                let key = keys::typed(&typed, fields, On::Inline, written);
                 let start = c.own.start + r.start + (written.len() - written.trim_start().len());
                 let end = c.own.start + r.start + written.trim_end().len();
                 if !inline_seen.insert((typed.kind.clone(), start)) {
@@ -163,4 +174,45 @@ pub(super) fn finish(
         }
     }
     raws
+}
+
+/// What the matcher knows about the note at `path` with this text, read as `source`: its
+/// frontmatter, where its body starts, and the frontmatter's tags; `links` says whether some
+/// type reads its links, which then start with the frontmatter's.
+fn note_of<'a>(
+    path: &'a str,
+    text: &'a str,
+    source: &'a Source<'a>,
+    links: bool,
+) -> matcher::Note<'a> {
+    let frontmatter = frontmatter::read(text);
+    let src: &str = &source.text;
+    let body_at = match &frontmatter {
+        Some(fm) => src
+            .match_indices('\n')
+            .nth(fm.end_line - 1)
+            .map_or(src.len(), |(i, _)| i + 1),
+        None => 0,
+    };
+    let (tags, end_line): (Vec<String>, usize) = match &frontmatter {
+        Some(fm) => (
+            ["tags", "tag"]
+                .iter()
+                .flat_map(|k| fm.values(k))
+                .map(|w| w.text.trim_start_matches('#').to_string())
+                .collect(),
+            fm.end_line,
+        ),
+        None => (Vec::new(), 0),
+    };
+    let mut note = matcher::Note::new(path, source, frontmatter, body_at);
+    for t in tags {
+        note.add_tag(&t);
+    }
+    if links {
+        for line in text.lines().take(end_line) {
+            note.links.extend(crate::owner::markdown::line_links(line));
+        }
+    }
+    note
 }
