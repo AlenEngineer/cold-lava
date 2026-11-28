@@ -151,6 +151,16 @@ fn a_kept_text_is_shown_opened_and_put_away_from_the_menu() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(!kept.exists(), "put away");
+    assert!(
+        !workspace.join("edited-by-editor").exists(),
+        "$EDITOR never ran on it"
+    );
+    let inbox = std::fs::read_dir(workspace.join("Inbox")).unwrap();
+    let left: Vec<_> = (inbox.flatten())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".Field Season"))
+        .collect();
+    assert!(left.is_empty(), "no copy of it was made: {left:?}");
     let files = system_trash(&home);
     assert_eq!(
         std::fs::read_to_string(files.join(".Field Season.cold-lava-kept-1700000000-0.md"))
@@ -1859,6 +1869,27 @@ fn an_extension_cant_close_a_prompt_a_dialog_or_a_typed_query() {
     let concepts = dir.join("example-workspace/Concepts");
     assert!(concepts.join("Whole thought.md").is_file());
     assert!(!concepts.join("Half a thought.md").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Needs python3, which CI's runners have.
+#[test]
+fn an_extension_cant_open_a_file_in_a_hidden_folder() {
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let dir = sandbox("open-hidden");
+    let home = dir.join("home");
+    let push = "    try:\n        ext.open_note(\".obsidian/graph.json\")\n    \
+                except Refused as refused:\n        ext.show(f\"refused: {refused}\")\n";
+    install_pushy_open_tasks(&dir, &home, push);
+    let out = drive_with(
+        "open-hidden.drive",
+        &dir,
+        &["--home".as_ref(), home.as_os_str()],
+    );
+    assert_passed(&out);
     let _ = std::fs::remove_dir_all(dir);
 }
 

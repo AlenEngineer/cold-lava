@@ -12,6 +12,7 @@ use cold_lava_engine::files::{
 };
 use cold_lava_engine::gateway::{self, Answer, Edit, Found, Query, Reason, Select, SubId};
 use cold_lava_engine::owner::given::Given;
+use cold_lava_engine::rel_path;
 use cold_lava_engine::types::Type;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -134,8 +135,26 @@ impl Host<'_> {
     }
 
     /// `workspace/open`: show a note, at a line; or the file of the item `item` at its place.
-    pub fn open_note(&mut self, note: PathBuf, line: Option<usize>, item: Option<String>) {
+    /// The path, absolute under the workspace or relative to it, is read as the gateway reads
+    /// one (`files::readable`: no hidden part but a kept text's, no `..`, no symlink) and must
+    /// be a file there;
+    /// the frontend is handed it in its normal spelling, so it never sees a path the gateway
+    /// refuses.
+    pub fn open_note(
+        &mut self,
+        note: PathBuf,
+        line: Option<usize>,
+        item: Option<String>,
+    ) -> Result<(), gateway::Error> {
+        let core = self.workspace()?;
+        let (rel, path) = files::readable(core.root(), &rel_path::or_whole(core.root(), &note))?;
+        if !path.is_file() {
+            let why = format!("{rel}: there is no file there");
+            return Err(gateway::Error::new(Reason::Refused, why));
+        }
+        let note = PathBuf::from(rel);
         self.effects.push(Effect::OpenNote { note, line, item });
+        Ok(())
     }
 
     /// The answer to `file/read` for a file of a kind it owns: its items and links join the
@@ -215,6 +234,11 @@ impl Host<'_> {
     /// The core, when the caller's manifest asks for `needs`.
     fn core(&mut self, needs: Permission) -> Result<&mut Core, gateway::Error> {
         self.may(needs)?;
+        self.workspace()
+    }
+
+    /// The core, whatever the caller's permissions, or the one refusal when none is open.
+    fn workspace(&mut self) -> Result<&mut Core, gateway::Error> {
         (self.core.as_deref_mut())
             .ok_or_else(|| gateway::Error::new(Reason::NoWorkspace, "no workspace is open"))
     }
@@ -287,10 +311,7 @@ impl Host<'_> {
         let owns = (self.owners.iter())
             .any(|(x, owner)| Some(x) == extension.as_ref() && Some(*owner) == me);
         match (owns, writes) {
-            (true, _) => self
-                .core
-                .as_deref_mut()
-                .ok_or_else(|| gateway::Error::new(Reason::NoWorkspace, "no workspace is open")),
+            (true, _) => self.workspace(),
             (false, false) => self.core(Permission::FilesRead),
             (false, true) => {
                 self.not_anothers(extension.as_deref())?;

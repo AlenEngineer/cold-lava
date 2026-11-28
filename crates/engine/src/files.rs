@@ -438,13 +438,21 @@ fn written<'a>(root: &'a Path, rel: &'a str) -> impl Fn(WriteError) -> Error + '
     as_refused(root, rel, "while writing")
 }
 
+/// The file at `rel` as `workspace/read` takes it, and its one spelling: as `resolve`, or a
+/// kept text (`normal_or_kept`). `workspace/open` takes the same.
+pub fn readable(root: &Path, rel: &str) -> Result<(String, PathBuf), Error> {
+    let rel = normal_or_kept(root, rel)?;
+    let path = at(root, &rel)?;
+    Ok((rel, path))
+}
+
 /// `workspace/read`
 pub fn read(root: &Path, rel: &str) -> Result<Text, Error> {
-    let rel = &normal_or_kept(root, rel)?;
-    let seen = Seen::file(&at(root, rel)?).map_err(io(rel))?;
+    let (rel, path) = readable(root, rel)?;
+    let seen = Seen::file(&path).map_err(io(&rel))?;
     let text = seen
         .text()
-        .map_err(|not| Error::new(Reason::Refused, not.about(rel)))?;
+        .map_err(|not| Error::new(Reason::Refused, not.about(&rel)))?;
     Ok(Text {
         text: text.to_string(),
         rev: seen.rev(),

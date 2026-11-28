@@ -1,0 +1,14 @@
+# workspace/open reads its path as the gateway reads one (#451): an extension can't open a
+# file in a hidden folder in the reader, as it can't read one with workspace/read.
+# tests/drive.rs installs the open-tasks example patched to ask workspace/open for
+# .obsidian/graph.json whenever the tasks change, and to show the Refused it raises.
+size 140x30
+env COLD_LAVA_EDITOR=none
+env COLD_LAVA_TODAY=2026-11-07
+wait-for ☐ 16 open tasks
+write Inbox/Chores.md - [ ] One\n
+wait-for refused: .obsidian/graph.json: a path can't have .., . or hidden folders and files
+expect-not reading · Esc / q back
+screen
+keys q
+exits 0
