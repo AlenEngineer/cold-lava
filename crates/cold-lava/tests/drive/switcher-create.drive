@@ -29,6 +29,6 @@ type Zqxjw.md/Inside
 wait-for Zqxjw.md/Inside▏
 wait-for 0 notes
 keys enter
-wait-for couldn't create Zqxjw.md/Inside.md
+wait-for Zqxjw.md/Inside.md: Not a directory
 keys q
 exits 0
