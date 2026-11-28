@@ -851,11 +851,7 @@ fn run() -> Result<()> {
                 .canonicalize()
                 .map_err(|e| anyhow::anyhow!("{file}: {e}"))?;
             let (root, found) = locate_note_workspace(&path);
-            let note = path
-                .strip_prefix(&root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let note = rel_path::or_whole(&root, &path);
             let rev = args.values.get("rev").map(String::as_str);
             let field = field.to_string();
             let op = gateway::Op::SetField { field, value };

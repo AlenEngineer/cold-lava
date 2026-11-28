@@ -90,10 +90,12 @@ pub fn edit(
     if let Some((owner, path)) = core.unread().find(|&(_, path)| path == rel) {
         return Err(refused(left_out(owner, path)));
     }
-    let item = core.item(rel, id).ok_or_else(|| {
+    let Some(item) = core.item(rel, id) else {
+        // A file that doesn't read (not UTF-8 text, a hidden path) says why, not "read again".
+        core.read_file(rel)?;
         let message = format!("{rel} has no item {id}: read it again");
-        Error::new(Reason::Changed, message)
-    })?;
+        return Err(Error::new(Reason::Changed, message));
+    };
     let edit = Edit {
         id: id.to_string(),
         rev: rev.unwrap_or(&item.rev).to_string(),
@@ -117,8 +119,7 @@ pub fn toggle(
 ) -> Result<Toggled> {
     let path =
         (file.canonicalize()).with_context(|| format!("no such file: {}", file.display()))?;
-    let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy();
-    let rel = rel.replace('\\', "/");
+    let rel = crate::rel_path::or_whole(root, &path);
     let shown = path.to_string_lossy();
     let mut core = open(root, registry)?;
     if let Some(owner) = core.owner_of(&rel) {

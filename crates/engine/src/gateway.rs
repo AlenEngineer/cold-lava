@@ -559,18 +559,6 @@ pub(crate) fn answer_line<'a>(s: &Settings, line: &str, item: &'a Item) -> Cow<'
     Cow::Owned(item)
 }
 
-/// `answer`, for an item of the note at `rel` (workspace-relative, with `.md`).
-fn answered(workspace: &Workspace, rel: &str, item: Item) -> Item {
-    let rel = rel.strip_suffix(".md").unwrap_or(rel);
-    match workspace
-        .notes
-        .binary_search_by(|n| n.rel.as_str().cmp(rel))
-    {
-        Ok(i) => answer(workspace, &workspace.notes[i], &item).into_owned(),
-        Err(_) => item,
-    }
-}
-
 impl Page {
     pub fn is_all(&self) -> bool {
         *self == Page::default()
@@ -583,7 +571,10 @@ impl Page {
 /// News says nothing of order, so whoever shows items in order queries again when it hears any.
 pub fn query(workspace: &Workspace, q: &Query) -> Result<Found, Error> {
     q.select.check(workspace)?;
-    let mut all = files(workspace).flat_map(|f| q.select.in_file(workspace, f));
+    // A query of one file reads no other file's items, which are read on first use.
+    let named = |f: &File<'_>| (q.select.filter.note.as_ref()).is_none_or(|n| *n == f.key());
+    let in_scope = files(workspace).filter(named);
+    let mut all = in_scope.flat_map(|f| q.select.in_file(workspace, f));
     if let Some(after) = &q.page.after
         && !all.by_ref().any(|i| i.id == *after)
     {
@@ -768,19 +759,26 @@ pub(crate) struct Written {
 /// checked against the names the whole workspace holds (`anchor_names`), which only the core
 /// can read.
 pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Written, Error> {
-    let (note, text, made) = make(root, workspace, req, &Settings::load(root))?;
+    let (note, text, made) = make(root, workspace, req, workspace.item_settings())?;
     if made.changed {
         let path = root.join(&note);
         write::replace(&path, text.as_bytes(), made.text.as_bytes())
             .map_err(|e| Error::new(Reason::of(&e), e.named_from(root)))?;
     }
-    Ok(Written {
-        note,
-        changed: made.changed,
-        what: made.what,
-        after: made.after,
-        warning: made.warning,
-    })
+    Ok(Written::of(note, made))
+}
+
+impl Written {
+    /// What the Markdown owner `made` of the note at `note`, as an edit written.
+    fn of(note: String, made: markdown::Made) -> Written {
+        Written {
+            note,
+            changed: made.changed,
+            what: made.what,
+            after: made.after,
+            warning: made.warning,
+        }
+    }
 }
 
 /// The edit `write` would make, nothing written: the note (workspace-relative, with `.md`), its
@@ -791,16 +789,18 @@ fn make(
     req: &Edit,
     settings: &Settings,
 ) -> Result<(String, String, markdown::Made), Error> {
-    let item = (workspace.notes.iter())
-        .flat_map(|n| workspace.items(n))
-        .find(|i| i.id == req.id)
-        .ok_or_else(|| {
-            let message = format!(
-                "no item {} now: it changed or is gone, read it again",
-                req.id
-            );
-            Error::new(Reason::Changed, message)
-        })?;
+    // The notes whose items are read already come first: whoever names an item has read its
+    // note, and reading every note's items to find one costs more than the edit (#467).
+    let read = (workspace.notes.iter()).filter_map(|n| n.items.get());
+    let found = read.flatten().find(|i| i.id == req.id);
+    let mut every = (workspace.notes.iter()).flat_map(|n| workspace.items(n));
+    let item = (found.or_else(|| every.find(|i| i.id == req.id))).ok_or_else(|| {
+        let message = format!(
+            "no item {} now: it changed or is gone, read it again",
+            req.id
+        );
+        Error::new(Reason::Changed, message)
+    })?;
     let note = &item.note;
     let path = root.join(note);
     let text = std::fs::read_to_string(&path)
@@ -828,51 +828,44 @@ fn anchor_names(workspace: &Workspace) -> HashSet<String> {
 
 /// The answer to an edit, from the note as the core has read it since.
 pub(crate) fn read_back(workspace: &Workspace, w: Written) -> Result<Edited, Error> {
-    let task_at = |line: usize| {
-        let rel = w.note.strip_suffix(".md").unwrap_or(&w.note);
-        let i = workspace
-            .notes
-            .binary_search_by(|n| n.rel.as_str().cmp(rel))
-            .ok()?;
-        let items = workspace.items(&workspace.notes[i]);
-        (items.iter())
-            .find(|i| i.line == line && i.data.answers_to("task"))
-            .cloned()
-    };
-    let (item, next) = match w.after {
-        After::Set(item) => (answered(workspace, &w.note, item), None),
-        After::Toggled { line, next } => {
-            let item = task_at(line).ok_or_else(|| {
-                let message = format!("ticked, but line {line} of {} reads as no task", w.note);
-                Error::new(Reason::ReadBack, message)
-            })?;
-            let next = next.and_then(task_at);
-            let fill = |i: Item| answered(workspace, &w.note, i);
-            (fill(item), next.map(fill))
+    let rel = w.note.strip_suffix(".md").unwrap_or(&w.note);
+    let found = (workspace.notes).binary_search_by(|n| n.rel.as_str().cmp(rel));
+    let (items, text) = match found {
+        Ok(i) => {
+            let note = &workspace.notes[i];
+            (workspace.items(note), note.text.as_str())
         }
+        Err(_) => (&[][..], ""),
     };
-    Ok(Edited {
-        item,
-        changed: w.changed,
-        next,
-        warning: w.warning,
-    })
+    answer_after(w, items, text, workspace.item_settings())
 }
 
 /// What `write` and then `read_back` would answer, with nothing written: the item as the
 /// note's new text reads it.
 pub(crate) fn would(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Edited, Error> {
-    let settings = Settings::load(root);
-    let (note, _, made) = make(root, workspace, req, &settings)?;
-    let items = crate::items::extract(&note, &made.text, &settings);
-    let line_of = |at: usize| made.text.lines().nth(at - 1).unwrap_or_default();
-    let shown = |item: &Item| answer_line(&settings, line_of(item.line), item).into_owned();
+    let settings = workspace.item_settings();
+    let (note, _, mut made) = make(root, workspace, req, settings)?;
+    let text = std::mem::take(&mut made.text);
+    let items = markdown::items(&note, &text, settings);
+    answer_after(Written::of(note, made), &items, &text, settings)
+}
+
+/// The answer to the edit `w`, from the note's `items` as its new `text` reads them: the item
+/// it names, and a tick's next occurrence, each as `query` hands it out.
+fn answer_after(
+    w: Written,
+    items: &[Item],
+    text: &str,
+    settings: &Settings,
+) -> Result<Edited, Error> {
+    let line_of = |at: usize| text.lines().nth(at.saturating_sub(1)).unwrap_or_default();
+    let shown = |item: &Item| answer_line(settings, line_of(item.line), item).into_owned();
     let task_at = |at: usize| (items.iter()).find(|i| i.line == at && i.data.answers_to("task"));
-    let (item, next) = match made.after {
+    let (item, next) = match w.after {
         After::Set(item) => (shown(&item), None),
         After::Toggled { line, next } => {
             let item = task_at(line).ok_or_else(|| {
-                let message = format!("a tick would leave line {line} of {note} no task");
+                let message = format!("ticked, but line {line} of {} reads as no task", w.note);
                 Error::new(Reason::ReadBack, message)
             })?;
             (shown(item), next.and_then(task_at).map(shown))
@@ -880,9 +873,9 @@ pub(crate) fn would(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Ed
     };
     Ok(Edited {
         item,
-        changed: made.changed,
+        changed: w.changed,
         next,
-        warning: made.warning,
+        warning: w.warning,
     })
 }
 
@@ -1292,8 +1285,8 @@ fields.text = { rest = true }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A dry run answers what the edit would, item and all, and writes and tells nothing; a
-    /// tick tried so says the task and its next occurrence.
+    /// A dry run answers what the edit would, item and all, and writes and tells nothing: a
+    /// set-field's and a tick's, with its next occurrence.
     #[test]
     fn an_edit_tried_writes_nothing_and_answers_as_the_edit() {
         let dir = workspace("would");
@@ -1315,6 +1308,8 @@ fields.text = { rest = true }
 
         let made = now(core.edit_item("table", &edit)).unwrap();
         assert_eq!(tried, made);
+        let made = now(core.edit_item("agenda", &tick(&plants))).unwrap();
+        assert_eq!(ticked, made, "a tick tried answers as the tick");
         let stale = core.would_edit(&edit).unwrap_err();
         assert_eq!(stale.reason, Reason::Changed, "{stale}");
         let _ = std::fs::remove_dir_all(&dir);

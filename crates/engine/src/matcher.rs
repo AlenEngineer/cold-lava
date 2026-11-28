@@ -55,7 +55,7 @@ pub struct Typed {
     pub place: Place,
 }
 
-/// Where a typed item was read: what `edit::set_field` needs to put a value back.
+/// Where a typed item was read: what `edit::plan` needs to put a value back.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Place {
     /// Its shape, by index in its type's `from`.

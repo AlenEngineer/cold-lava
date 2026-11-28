@@ -185,8 +185,8 @@ then a query and a view, not a parser of its own.
   subscription (`Extension::items`), or to its own screen; news for a subscription nobody holds
   any more stops it.
 - **`items/edit`** takes `id`, `rev` and an `op` with its fields:
-  `{"op": "set-field", "field", "value"}` through `edit::set_field`, `{"op": "toggle"}`
-  through `tasks::toggle` (only on an item that answers to `task`), or `{"op": "anchor"}`,
+  `{"op": "set-field", "field", "value"}` through `edit::plan`, `{"op": "toggle"}`
+  through `tasks::toggle_text` (only on an item that answers to `task`), or `{"op": "anchor"}`,
   which writes an anchor on the item to keep a reference to it ("Anchors, as built"). An unknown op is refused
   when the message is read, naming the ops there are. The core finds the item by id (ids hash
   the note, so they are unique in the workspace), makes the edit through that op's safe path,
@@ -1245,7 +1245,7 @@ style.minutes = { badge = true, icon = "⏱" }
   (`Extension::poll`) and, when it has changed since the list was sent, sends the list again
   filed by the new day.
 - **Ticking** is `view/event toggled` to the agenda, which sends `items/edit toggle` with the
-  row's id and `rev`; `x` in the reader is the same edit as the screen `reader`. Both reach `tasks::toggle`, as `task
+  row's id and `rev`; `x` in the reader is the same edit as the screen `reader`. Both reach `tasks::toggle_text` through `Core::edit_item`, as `task
   toggle --id` does: done dates, recurrence, custom statuses' next symbols, the cancelled
   date. A task changed since the agenda was read is refused with the reason on the status line.
   After the call the menu reads the edit back, the agenda hears it through its subscription and

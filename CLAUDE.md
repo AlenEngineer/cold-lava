@@ -485,7 +485,7 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `gateway.rs`: the item messages of the workspace gateway (`items/query`, `items/subscribe`,
   `items/changed`/`items/reset`, `items/edit` with `set-field` and `toggle`, `types/list`) and
   their pinned JSON. `Core` answers them (`query_items`, `subscribe_items`, `edit_item`); an
-  edit goes through `edit::set_field` or `tasks::toggle` (in a file another owner reads,
+  edit goes through `edit::plan` or `tasks::toggle_text` (in a file another owner reads,
   through that owner: `owner/edits.rs`), is read again and emits
   `Event::ItemEdited` naming who made it. Extensions and screens change items only here.
 - `links.rs`: the link graph for `links/query` (every file links come from, where each leads,

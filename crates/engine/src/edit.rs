@@ -1,4 +1,4 @@
-//! Changing items in place: `set_field` puts one value of one typed item back into its note
+//! Changing items in place: `plan` puts one value of one typed item back into its note
 //! (docs/extensions.md, "Writing, as built").
 //!
 //! The value goes through the source its field is read from: only the value's bytes change, a
@@ -9,7 +9,6 @@
 
 use std::fmt;
 use std::ops::Range;
-use std::path::Path;
 
 use chrono::{NaiveDate, NaiveDateTime, Timelike};
 use regex::Regex;
@@ -20,7 +19,7 @@ use crate::frontmatter;
 use crate::items::{self, Data, Item, Settings};
 use crate::matcher::{self, Typed};
 use crate::sources::{On, Source};
-use crate::style::{Lazy, Style, TaskFields};
+use crate::style::{Lazy, TaskFields};
 use crate::types::Value;
 use crate::{daily, workspace};
 
@@ -71,7 +70,7 @@ pub struct SetField<'a> {
     pub value: Json,
 }
 
-/// What `set_field` did, or would do.
+/// What `plan` would do.
 #[derive(Debug, Serialize)]
 pub struct Set {
     /// The note's text after the edit.
@@ -83,24 +82,7 @@ pub struct Set {
     pub changed: bool,
 }
 
-/// `set_field` on the note at workspace-relative `note` in `root`, written over the text it read
-/// unless `dry_run`. New text follows the workspace's style, counted from its notes when the
-/// edit adds text that needs it.
-pub fn set_field(root: &Path, note: &str, req: &SetField, dry_run: bool) -> Result<Set, EditError> {
-    let path = root.join(note);
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| EditError::Io(format!("{}: {e}", path.display())))?;
-    let style = Lazy::new(|| Style::of_root(root));
-    let set = plan(note, &text, &Settings::load(root), &style, req)?;
-    if set.changed && !dry_run {
-        let seen = crate::read::Seen::kept(&path, text.as_bytes());
-        seen.replace(set.text.as_bytes())
-            .map_err(|e| EditError::written(e, root))?;
-    }
-    Ok(set)
-}
-
-/// The edit `set_field` would make to `text`, the note at workspace-relative `note`, checked by
+/// The edit `items/edit set-field` makes to `text`, the note at workspace-relative `note`, checked by
 /// reading it back. What it adds is spelled in `style`.
 pub fn plan(
     note: &str,
