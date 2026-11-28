@@ -1628,6 +1628,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// #457: a Markdown link rewritten to a path with `#` in it escapes the `#` (`%23`), or it
+    /// would lead to a heading of another note, and keeps the rest as written: the angle
+    /// brackets, and a space as a space or as `%20`. Here the note that moves holds the links,
+    /// to files that stay where they are.
+    #[test]
+    fn a_rewritten_markdown_link_escapes_a_hash_in_its_path() {
+        let files = [
+            ("C# notes/Topic.md", "t"),
+            ("Hash #2.md", "h"),
+            (
+                "Notes/Rocky.md",
+                "[cs](<../C%23 notes/Topic.md>) [h](../Hash%20%232.md) [s](<../Hash %232.md#Top>)\n",
+            ),
+        ];
+        let (dir, ix) = workspace_with("hash-link", &files);
+        let rocky = ix.by_rel("Notes/Rocky").unwrap();
+        apply(&plan(&ix, rocky, "Deep/Down/Rocky").unwrap(), &dir).unwrap();
+        assert_eq!(
+            read(&dir, "Deep/Down/Rocky.md"),
+            "[cs](<../../C%23 notes/Topic.md>) [h](../../Hash%20%232.md) \
+             [s](<../../Hash %232.md#Top>)\n"
+        );
+        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let topic = ix.by_rel("C# notes/Topic").unwrap();
+        let hash = ix.by_rel("Hash #2").unwrap();
+        assert!(
+            !ix.backlinks(topic).is_empty(),
+            "the link still leads to Topic"
+        );
+        assert!(
+            !ix.backlinks(hash).is_empty(),
+            "the links still lead to Hash #2"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// #397, the source side: what moves can't be reached through a symlinked folder either,
     /// or the move would pull a folder or file from outside into the workspace and take it
     /// from where it was. Refused when planned and, for a link put in after the plan, by

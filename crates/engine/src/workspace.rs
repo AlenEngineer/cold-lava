@@ -592,6 +592,16 @@ mod tests {
             "ʻAʻā.md",
             "written unescaped"
         );
+        assert_eq!(
+            encode_target_like("C# notes/Hash #2.md", "Hot%20Rock.md"),
+            "C%23%20notes/Hash%20%232.md",
+            "a `#` would start a heading"
+        );
+        assert_eq!(
+            encode_target_like("C# notes/Hash #2.md", "Hot Rock.md"),
+            "C%23 notes/Hash %232.md",
+            "a space as written, between angle brackets"
+        );
     }
 
     #[test]
