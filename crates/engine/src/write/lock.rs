@@ -37,7 +37,10 @@ use std::time::Duration;
 /// that a wait ran out: while the holder stays stopped, every later save in that folder waits
 /// the whole `WAIT` again, on the caller's thread (the TUI's one thread for the menu's saves).
 /// The trade is stated: a stopped holder is rare, and remembering it would need state shared
-/// across writes that could go stale.
+/// across writes that could go stale. The clearing of a killed save's leftovers (`stale::once`)
+/// takes the same turn the first time this process stages a write in a folder, so that write
+/// can wait twice, up to twice `WAIT`, and a `write_atomic` or `create`, which take no turn
+/// themselves, can wait `WAIT` behind another cold-lava's save there.
 pub(super) const WAIT: Duration = Duration::from_secs(5);
 
 /// A writer's turn on a folder: the lock, held until this is dropped. Empty when the write went

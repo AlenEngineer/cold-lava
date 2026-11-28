@@ -133,6 +133,39 @@ fn deletes_a_note_to_the_system_trash_and_undoes_it() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A text kept from a save race (#427) is shown, opened and put away from the menu.
+#[test]
+fn a_kept_text_is_shown_opened_and_put_away_from_the_menu() {
+    let dir = sandbox("kept");
+    let home = dir.join("home");
+    let workspace = dir.join("example-workspace");
+    let note = workspace.join("Inbox/Field Season.md");
+    let before = std::fs::read(&note).unwrap();
+    let kept = workspace.join("Inbox/.Field Season.cold-lava-kept-1700000000-0.md");
+    std::fs::write(&kept, "The text another program saved meanwhile.\n").unwrap();
+    let out = drive_with("kept.drive", &dir, &["--home".as_ref(), home.as_os_str()]);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!kept.exists(), "put away");
+    let files = system_trash(&home);
+    assert_eq!(
+        std::fs::read_to_string(files.join(".Field Season.cold-lava-kept-1700000000-0.md"))
+            .unwrap(),
+        "The text another program saved meanwhile.\n",
+        "in the trash, not removed"
+    );
+    assert_eq!(
+        std::fs::read(&note).unwrap(),
+        before,
+        "the note is as it was"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// The slow input a delete has to survive: the note changes between the prompt and the yes.
 #[test]
 fn a_note_rewritten_while_the_delete_prompt_is_open_is_asked_about_again() {
@@ -2746,6 +2779,10 @@ fn ext_list_prints_what_each_extension_may_do() {
          graph  built in\n\
          \x20 The workspace's notes and the links between them\n\
          \x20 permissions: items.read\n\
+         kept  built in\n\
+         \x20 Texts a save couldn't put back, kept beside their notes\n\
+         \x20 permissions: files.read, files.delete\n\
+         \x20 command: kept.open  Kept texts: what saves couldn't put back\n\
          open-tasks 0.1.0  {}\n\
          \x20 Counts the workspace's open tasks in the status line, moves overdue ones to today, \
          and lists them by note\n\

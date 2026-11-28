@@ -3,10 +3,15 @@
 //! process stages in a folder clears the ones a dead cold-lava left there (`once`).
 //!
 //! What a staged file holds after a kill depends on when the kill came: the killed save's new
-//! text (before the swap), the text the swap took out (after it), or another program's text
-//! `put_back` was handing back. So one is removed only when it holds what its file holds now,
-//! or nothing (a kill before the bytes went in); any other is kept beside the file under a
-//! kept name (`kept::keep`), never removed. The file is read only when it is a regular file of
+//! text (before the swap), the text the swap took out (after it), the file's only text (after
+//! `aside` moved it out, under a name of its own, `name::aside`), or another program's text
+//! `put_back` was handing back. So a file moved aside goes back to its file's path when
+//! nothing is there (`os_rename::no_replace`, which never replaces): only there can a kill
+//! leave the path empty, and anywhere else an empty path means another program deleted or
+//! renamed the file after the kill, which putting it back would undo. One is removed only when
+//! it holds what its file holds now, or nothing (a kill before the bytes went in); any other
+//! is kept beside the file under a kept name (`kept::keep`), never removed, and the core
+//! lists it (`find::find`). The file is read only when it is a regular file of
 //! the staged file's length (`same_length`): a pipe is never read, nor a file that can't be a
 //! copy, whatever its size.
 //!
@@ -35,7 +40,7 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use super::name::staged_for;
-use super::{kept, lock};
+use super::{kept, lock, os_rename};
 
 /// How long ago a dead cold-lava's staged file must have been written, or renamed, before it
 /// is cleared: what keeps a file staged by a save this process can't see before that save
@@ -44,7 +49,7 @@ use super::{kept, lock};
 /// says nothing once a `replace` has swapped (the name then holds the old text, as old as
 /// that text): the folder's turn covers that. A clock more than this apart between two
 /// machines sharing a folder defeats it.
-const AGE: Duration = Duration::from_secs(60);
+pub(super) const AGE: Duration = Duration::from_secs(60);
 
 /// Clear the staged files dead cold-lavas left in `dir`, the first time this process stages a
 /// write there. The folders already swept are remembered so a folder is listed once per
@@ -92,33 +97,62 @@ fn clear(dir: &Path, wait: Duration, age: Duration) -> Swept {
     };
     let mut swept = Swept::Done;
     for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some((file, pid)) = name.to_str().and_then(staged_for) else {
-            continue;
-        };
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
-        if !meta.is_file() || !dead(pid) {
-            continue;
-        }
-        match since_changed(&meta) {
-            Some(ago) if ago > age => {}
-            Some(_) => {
+        let (file, aside) = match left(&entry, age) {
+            Left::Not => continue,
+            Left::Young => {
                 swept = Swept::Again;
                 continue;
             }
-            None => continue,
+            Left::Old { file, aside } => (dir.join(file), aside),
+        };
+        let staged = entry.path();
+        let len = entry.metadata().map_or(0, |m| m.len());
+        if aside && len > 0 && os_rename::no_replace(&staged, &file).is_ok() {
+            continue;
         }
-        let file = dir.join(file);
-        let now = match meta.len() {
+        let now = match len {
             0 => Some(Vec::new()),
             len => same_length(&file, len),
         };
         let droppable: Vec<&[u8]> = now.iter().map(Vec::as_slice).collect();
-        kept::keep(&file, &file, &entry.path(), &droppable);
+        kept::keep(&file, &file, &staged, &droppable);
     }
     swept
+}
+
+/// What a folder's entry is to the clearing of staged files.
+pub(super) enum Left {
+    /// Not a dead cold-lava's staged file (another name, a live one's, not a regular file), or
+    /// one whose age can't be read or is ahead of the clock (`since_changed`).
+    Not,
+    /// A dead cold-lava's, written or renamed within the age asked for.
+    Young,
+    /// A dead cold-lava's, older: the name of the file it was staged for, and whether it is
+    /// that file moved aside (`name::Staged::aside`).
+    Old { file: String, aside: bool },
+}
+
+/// Whether `entry` is a staged file a dead cold-lava left, older than `age` (`AGE` for the
+/// sweep). The one test the sweep and the finder of kept texts (`find::find`) both ask.
+pub(super) fn left(entry: &std::fs::DirEntry, age: Duration) -> Left {
+    let name = entry.file_name();
+    let Some(staged) = name.to_str().and_then(staged_for) else {
+        return Left::Not;
+    };
+    let Ok(meta) = entry.metadata() else {
+        return Left::Not;
+    };
+    if !meta.is_file() || !dead(staged.pid) {
+        return Left::Not;
+    }
+    match since_changed(&meta) {
+        Some(ago) if ago > age => Left::Old {
+            file: staged.file.to_string(),
+            aside: staged.aside,
+        },
+        Some(_) => Left::Young,
+        None => Left::Not,
+    }
 }
 
 /// What `file` holds, when it is a regular file of `len` bytes (not a link, a pipe or a
@@ -262,6 +296,58 @@ mod tests {
             assert!(left.contains(stays), "{stays} stays: {left:?}");
         }
         assert_eq!(std::fs::read(d.join("N.md")).unwrap(), b"now");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A save killed after it moved the note aside (where files can't be swapped, `aside`)
+    /// leaves the note's only text under the aside name, and nothing at the note's path
+    /// (#427): the sweep puts it back there. A staged file of any other kind whose path is
+    /// empty is one another program deleted or renamed after the kill: it is kept under a kept
+    /// name, and the note is not made again, nor beside the one it was renamed to.
+    #[test]
+    fn only_a_file_moved_aside_goes_back_to_its_path() {
+        let d = dir("only");
+        let long = Duration::from_secs(600);
+        leave(
+            &d,
+            &format!(".N.md.cold-lava-{}-0.aside", dead()),
+            "the only text",
+            long,
+        );
+        leave(
+            &d,
+            &format!(".Gone.md.cold-lava-{}-1.tmp", dead()),
+            "before the delete",
+            long,
+        );
+        std::fs::write(d.join("U.md"), "renamed from T").unwrap();
+        leave(
+            &d,
+            &format!(".T.md.cold-lava-{}-2.tmp", dead()),
+            "before the rename",
+            long,
+        );
+        assert_eq!(clear(&d, lock::WAIT, Duration::ZERO), Swept::Done);
+        assert_eq!(std::fs::read(d.join("N.md")).unwrap(), b"the only text");
+        let left = files(&d);
+        assert!(
+            !left.contains(&"Gone.md".to_string()),
+            "not made again: {left:?}"
+        );
+        assert!(
+            !left.contains(&"T.md".to_string()),
+            "not made again: {left:?}"
+        );
+        let kept_of = |stem: &str, text: &[u8]| {
+            let kept: Vec<_> = (left.iter())
+                .filter(|f| f.starts_with(&format!(".{stem}.cold-lava-kept-")))
+                .collect();
+            assert_eq!(kept.len(), 1, "{left:?}");
+            assert_eq!(std::fs::read(d.join(kept[0])).unwrap(), text);
+        };
+        kept_of("Gone", b"before the delete");
+        kept_of("T", b"before the rename");
+        assert_eq!(left.len(), 4, "N.md, U.md and the two kept texts: {left:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

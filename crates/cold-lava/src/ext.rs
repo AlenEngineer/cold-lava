@@ -45,6 +45,7 @@ impl Registry {
         found.push(Box::new(crate::agenda::Agenda::default()));
         found.push(Box::new(crate::type_table::Tables::default()));
         found.push(Box::new(crate::graph_ext::Graph::default()));
+        found.push(Box::new(crate::kept_ext::Kept::default()));
         let dir = installed::user_dir();
         Registry::with(cold_lava_host::Registry::load(found, dir.as_deref()))
     }
