@@ -89,11 +89,9 @@ fn until(
     let (mut effects, mut events) = (Vec::new(), Vec::new());
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
-        events.extend(core.poll());
-        for (_, news) in core.take_item_news() {
-            effects.extend(r.call(ExtId(0), Some(core), |e, h| e.items(news, h)));
-        }
-        effects.extend(r.call(ExtId(0), Some(core), |e, h| e.poll(h)));
+        let heard = core.poll();
+        effects.extend(r.frame(core, &heard).into_iter().map(|(_, effect)| effect));
+        events.extend(heard);
         if let Some(found) = effects.iter().find(|e| done(e)) {
             return (found.clone(), events);
         }

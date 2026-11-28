@@ -1261,11 +1261,8 @@ mod tests {
     fn until(r: &mut Registry, core: &mut Core, done: impl Fn(&Effect) -> bool) -> Effect {
         let (mut effects, deadline) = (Vec::new(), Instant::now() + Duration::from_secs(20));
         while Instant::now() < deadline {
-            core.poll();
-            for (_, news) in core.take_item_news() {
-                effects.extend(r.call(ExtId(0), Some(core), |e, h| e.items(news, h)));
-            }
-            effects.extend(r.call(ExtId(0), Some(core), |e, h| e.poll(h)));
+            let events = core.poll();
+            effects.extend(r.frame(core, &events).into_iter().map(|(_, effect)| effect));
             if let Some(found) = effects.iter().find(|e| done(e)) {
                 return found.clone();
             }

@@ -26,6 +26,7 @@ pub mod process;
 pub mod rpc;
 pub mod transport;
 
+mod deliver;
 mod extension;
 mod host;
 mod manifest;
@@ -34,6 +35,7 @@ mod registry;
 
 pub use cold_lava_views::view;
 
+pub use deliver::{Deliveries, Delivery, FRAME, Next, Step};
 pub use extension::Extension;
 pub use host::{ExtId, Host};
 pub use manifest::{CommandSpec, FileType, Manifest, Permission, Role, Shows, Spec, namespaced};
@@ -434,10 +436,7 @@ mod tests {
         assert_eq!(edited, Some(("tick".into(), "ticked".into())), "attributed");
 
         // The menu hands each subscription's news to the extension that made it.
-        for (owner, news) in core.take_item_news() {
-            let ext = r.by_name(&owner).unwrap();
-            r.call(ext, Some(&mut core), |e, host| e.items(news, host));
-        }
+        r.frame(&mut core, &[]);
         for i in [1, 2] {
             let heard = &log(i).heard;
             assert!(

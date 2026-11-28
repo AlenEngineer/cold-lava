@@ -11,8 +11,9 @@ use crate::core::{Applying, Core, Event as CoreEvent, Jump, NotApplied};
 use crate::embed::Embedded;
 use crate::ext::view::{Happened, ViewId, ViewNews};
 use crate::ext::{
-    AGENDA, CommandRequest, EditorRequest, Effect, ExtId, Extension, FileNews, FilePreview, GRAPH,
-    Host, MENU, Manifest, PaneId, PaneNews, PaneSpec, READER, Registry, TABLE,
+    AGENDA, CommandRequest, Deliveries, EditorRequest, Effect, ExtId, Extension, FileNews,
+    FilePreview, GRAPH, Host, MENU, Manifest, Next, PaneId, PaneNews, PaneSpec, READER, Registry,
+    Step, TABLE,
 };
 use crate::frontmatter::{self, TagEdit};
 use crate::gateway::{Answer, Edit, Op, Reason, Ticket};
@@ -1008,9 +1009,7 @@ impl Home {
 
     /// Answer what extensions in processes asked since the last frame.
     fn poll_extensions(&mut self) {
-        for ext in self.registry.ids() {
-            self.call(ext, |e, host| e.poll(host));
-        }
+        self.deliver(Deliveries::new(&[Step::Polls], &[]));
         let registry = &self.registry;
         self.views.retain_owners(|e| registry.running(e));
         self.forget_closed_views();
@@ -2009,27 +2008,31 @@ impl Home {
     /// `rescan_now` (`reload_tree`), which has no event for `poll`. `rescan-news.drive` checks
     /// the latter from the screen.
     fn deliver_item_news(&mut self) {
-        let Some(core) = self.core.as_mut() else {
-            return;
-        };
-        let news = core.take_item_news();
-        self.deliver_news(news);
+        self.deliver(Deliveries::new(&[Step::News], &[]));
     }
 
-    fn deliver_news(&mut self, news: Vec<(String, crate::gateway::News)>) {
-        for (owner, news) in news {
+    /// Take a frame's `steps` (the host's `Deliveries`): call each extension it names and do
+    /// what it asked for before the next. The whiteboard's bindings hear their own news, and an
+    /// answer to an edit one of the menu's screens made shows on the status line when it failed.
+    fn deliver(&mut self, mut steps: Deliveries) {
+        loop {
             let Some(core) = self.core.as_mut() else {
                 return;
             };
-            if let Some(b) = self.board.as_mut()
-                && b.heard(core, &owner, &news)
-            {
-                continue;
-            }
-            let sub = news.subscription();
-            match self.registry.by_name(&owner) {
-                Some(ext) => self.call(ext, |e, host| e.items(news, host)),
-                None => drop(core.unsubscribe_items(&owner, sub)),
+            let board = self.board.is_some();
+            let ours = |client: &str| board && client == crate::bind::OWNER;
+            let Some(next) = steps.next(&self.registry, core, ours) else {
+                return;
+            };
+            match next {
+                Next::Call(ext, delivery) => self.call(ext, |e, host| delivery.send(e, host)),
+                Next::News { client, news } => {
+                    if let (Some(b), Some(core)) = (self.board.as_mut(), self.core.as_mut()) {
+                        b.heard(core, &client, &news);
+                    }
+                }
+                Next::Edited { answer: Ok(_), .. } => {}
+                Next::Edited { answer: Err(e), .. } => self.flash(format!("not saved: {e}")),
             }
         }
     }
@@ -2117,25 +2120,12 @@ impl Home {
                 _ => {}
             }
         }
-        self.tell_owners(&root, events);
-        self.ask_owners();
-        self.deliver_edited();
+        self.previews_changed(events);
+        self.deliver(Deliveries::new(
+            &[Step::Files, Step::Owners, Step::Edited],
+            events,
+        ));
         self.deliver_relinked();
-    }
-
-    /// Hand the answers to `items/edit` that came later (edits of files other owners read) to
-    /// whoever asked: an extension, or one of the menu's screens, whose status line says it.
-    fn deliver_edited(&mut self) {
-        let Some(core) = self.core.as_mut() else {
-            return;
-        };
-        for (by, ticket, answer) in core.take_edited() {
-            match (self.registry.by_name(&by), answer) {
-                (Some(ext), answer) => self.call(ext, |e, host| e.edited(ticket, answer, host)),
-                (None, Ok(_)) => {}
-                (None, Err(e)) => self.flash(format!("not saved: {e}")),
-            }
-        }
     }
 
     /// The tree of the workspace at `root`, with the files extensions open.
@@ -2143,26 +2133,15 @@ impl Home {
         scan_tree(root, |x| self.registry.owner(x).is_some())
     }
 
-    /// `file/changed` to the owner of each file that changed on disk.
-    fn tell_owners(&mut self, root: &Path, events: &[CoreEvent]) {
+    /// A file whose preview the note shown has changed on disk: the preview is asked for again.
+    fn previews_changed(&mut self, events: &[CoreEvent]) {
         for e in events {
-            let CoreEvent::FileChanged(rel) = e else {
-                continue;
-            };
-            // Its preview, in the note shown, is asked for again.
-            if self.previews.has(rel)
+            if let CoreEvent::FileChanged(rel) = e
+                && self.previews.has(rel)
                 && let Some(r) = self.reader.as_mut()
             {
                 r.invalidate();
             }
-            let Some((owner, _)) = self.registry.owner_of(rel) else {
-                continue;
-            };
-            let news = FileNews::Changed {
-                path: rel.clone(),
-                rev: read::rev_at(root, rel),
-            };
-            self.call(owner, |e, host| e.file(news, host));
         }
     }
 
@@ -2303,26 +2282,7 @@ impl Home {
 
     /// Hand each owner the `file/read` and `file/edit` requests the core has for it.
     fn ask_owners(&mut self) {
-        let Some(core) = self.core.as_mut() else {
-            return;
-        };
-        let (reads, edits) = (core.take_reads(), core.take_file_edits());
-        for (owner, read) in reads {
-            match self.registry.by_name(&owner) {
-                Some(ext) => self.call(ext, |e, host| e.read_file(read, host)),
-                None => drop(read),
-            }
-        }
-        for (owner, edit) in edits {
-            match (self.registry.by_name(&owner), self.core.as_mut()) {
-                (Some(ext), _) => self.call(ext, |e, host| e.edit_file(edit, host)),
-                (None, Some(core)) => {
-                    let why = Err(format!("{owner} isn't loaded"));
-                    core.file_edited(&owner, &edit.path, &edit.rev, why);
-                }
-                (None, None) => {}
-            }
-        }
+        self.deliver(Deliveries::new(&[Step::Owners], &[]));
     }
 
     /// The shown note, parsed.
