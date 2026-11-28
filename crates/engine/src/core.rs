@@ -2264,7 +2264,7 @@ mod tests {
             },
         );
         let refused = core
-            .write_file("Notes/Lava.md", "ours", &read.rev)
+            .write_file("Notes/Lava.md", "ours", &seen.rev)
             .unwrap_err();
         assert_eq!(refused.reason, Reason::Kept, "{refused}");
         let heard = wait_for(&mut core, |e| e.contains(&Event::KeptChanged));
