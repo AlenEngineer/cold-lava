@@ -558,9 +558,13 @@ impl Page {
 pub fn query(workspace: &Workspace, q: &Query) -> Result<Found, Error> {
     q.select.check(workspace)?;
     // A query of one file reads no other file's items, which are read on first use.
-    let named = |f: &File<'_>| (q.select.filter.note.as_ref()).is_none_or(|n| *n == f.key());
-    let in_scope = files(workspace).filter(named);
-    let mut all = in_scope.flat_map(|f| q.select.in_file(workspace, f));
+    let in_scope: Vec<File<'_>> = match &q.select.filter.note {
+        Some(key) => file(workspace, key).into_iter().collect(),
+        None => files(workspace).collect(),
+    };
+    let mut all = in_scope
+        .into_iter()
+        .flat_map(|f| q.select.in_file(workspace, f));
     if let Some(after) = &q.page.after
         && !all.by_ref().any(|i| i.id == *after)
     {
@@ -775,12 +779,7 @@ fn make(
     req: &Edit,
     settings: &Settings,
 ) -> Result<(String, String, markdown::Made), Error> {
-    // The notes whose items are read already come first: whoever names an item has read its
-    // note, and reading every note's items to find one costs more than the edit (#467).
-    let read = (workspace.notes.iter()).filter_map(|n| n.items.get());
-    let found = read.flatten().find(|i| i.id == req.id);
-    let mut every = (workspace.notes.iter()).flat_map(|n| workspace.items(n));
-    let item = (found.or_else(|| every.find(|i| i.id == req.id))).ok_or_else(|| {
+    let item = workspace.find_item(&req.id).ok_or_else(|| {
         let message = format!(
             "no item {} now: it changed or is gone, read it again",
             req.id

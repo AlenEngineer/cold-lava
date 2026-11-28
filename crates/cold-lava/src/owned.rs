@@ -186,8 +186,12 @@ fn task_at(core: &Core, rel: &str, line: usize) -> Result<Option<Item>, Error> {
         select,
         page: gateway::Page::default(),
     };
-    let found = core.query_items(&query)?;
-    Ok(found.items.into_iter().find(|i| i.line == line))
+    match core.query_items(&query) {
+        Ok(found) => Ok(found.items.into_iter().find(|i| i.line == line)),
+        // A flavour without task lists has no `task` kind, so no line is a task.
+        Err(e) if e.reason == Reason::Refused => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 /// A task's status type, as the gateway hands it out with every task (`status_type`).

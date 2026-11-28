@@ -359,6 +359,15 @@ impl Workspace {
         }
     }
 
+    /// The note item with this `id`. The notes whose items are read already come first:
+    /// whoever names an item has read its note, and reading every note's items to find one
+    /// costs more than the edit that asks (#467).
+    pub fn find_item(&self, id: &str) -> Option<&Item> {
+        let read = (self.notes.iter()).filter_map(|n| n.items.get());
+        let mut every = (self.notes.iter()).flat_map(|n| self.items(n));
+        (read.flatten().find(|i| i.id == id)).or_else(|| every.find(|i| i.id == id))
+    }
+
     fn read_items(&self, note: &Note) -> Vec<Item> {
         let rel = format!("{}.md", note.rel);
         markdown::items(&rel, &note.text, self.item_settings())
