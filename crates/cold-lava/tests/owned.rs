@@ -1,5 +1,6 @@
-//! The command line and files an extension owns: `items`, `agenda` and `table` read them from
-//! what their owner gave before, and `rename` starts the owner to relink them. Each test has its
+//! The command line and files an extension owns: `items`, `agenda`, `table` and `tidy` read
+//! them from what their owner gave before, and `rename` and `item set` start the owner to
+//! change them. Each test has its
 //! own home with csv-table installed, so neither your extensions nor your cache take part.
 
 use std::path::{Path, PathBuf};
@@ -62,6 +63,10 @@ fn text(out: &Output) -> (String, String) {
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
 }
+
+/// A type for the rows of a CSV whose header is `K,V`.
+const CELLT: &str = "\n[types.cellt]\non = \"row\"\nwhere.header = [\"K\", \"V\"]\n\
+    fields.k = { column = \"K\" }\nfields.v = { column = \"V\" }\n";
 
 /// Every file under `dir` with its bytes, by path.
 fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
@@ -467,8 +472,6 @@ fn a_csv_rows_first_cell_is_set_among_rows_that_start_alike() {
         eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
         return;
     }
-    const CELLT: &str = "\n[types.cellt]\non = \"row\"\nwhere.header = [\"K\", \"V\"]\n\
-        fields.k = { column = \"K\" }\nfields.v = { column = \"V\" }\n";
     // The last two have a first cell that is literally the name another row is given.
     for (name, before, v, to, after) in [
         ("first", "K,V\na,1\na,2\n", "1", "zz", "K,V\nzz,1\na,2\n"),
@@ -529,6 +532,61 @@ fn a_csv_rows_first_cell_is_set_among_rows_that_start_alike() {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), after, "{name}");
         let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
     }
+}
+
+/// Every command opens a workspace one way, as the core with the owners' cache: `tidy`
+/// counts a link in a file an extension owns, as the menu's tidy view does, and `item set`
+/// goes through the core and keeps what the owner gave for the file it wrote, so the next
+/// command reads the file from the cache and a second edit is not refused (#258).
+#[test]
+fn every_command_opens_the_workspace_as_the_core_with_its_owned_files() {
+    use serde_json::Value;
+    if !has_python() {
+        eprintln!("skipped: python3 isn't on PATH, and the example extension needs it");
+        return;
+    }
+    let (workspace, home) = sandbox("one-way", |main| main);
+    let ws = workspace.to_str().unwrap();
+    std::fs::write(workspace.join("Lonely.md"), "Only a CSV links here.\n").unwrap();
+    std::fs::write(
+        workspace.join("Links.csv"),
+        "Note (link),Year\nLonely,2000\n",
+    )
+    .unwrap();
+    let file = workspace.join("T.csv");
+    std::fs::write(&file, "K,V\na,1\n").unwrap();
+    let types = workspace.join(".cold-lava/types.toml");
+    let text_before = std::fs::read_to_string(&types).unwrap();
+    std::fs::write(&types, text_before + CELLT).unwrap();
+    let run = |args: &[&str]| -> (String, String) {
+        let out = cold_lava(&home, args);
+        let (stdout, stderr) = text(&out);
+        assert!(out.status.success(), "{args:?}\n{stdout}{stderr}");
+        (stdout, stderr)
+    };
+    // A rename starts the owner, which reads the files.
+    run(&["rename", ws, "Krakatoa", "Krakatau"]);
+
+    let (out, _) = run(&["tidy", ws, "--json"]);
+    let report: Value = serde_json::from_str(&out).unwrap();
+    let orphans = report["orphans"].as_array().unwrap();
+    assert!(
+        !orphans.iter().any(|o| o["note"] == "Lonely.md"),
+        "the CSV's link counts: {out}"
+    );
+
+    let file = file.to_str().unwrap();
+    for v in ["2", "3"] {
+        let (listed, err) = run(&["items", ws, "cellt", "--json"]);
+        assert!(err.is_empty(), "the cache has the file as it is now: {err}");
+        let row: Value = serde_json::from_str(listed.lines().next().unwrap()).unwrap();
+        run(&["item", "set", file, row["id"].as_str().unwrap(), "v", v]);
+        assert_eq!(
+            std::fs::read_to_string(file).unwrap(),
+            format!("K,V\na,{v}\n")
+        );
+    }
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
 }
 
 /// A copy of the example workspace with `Home.chores` in it, and a home with the owner of

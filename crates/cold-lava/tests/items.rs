@@ -213,6 +213,30 @@ fn a_task_keeps_its_id_through_a_toggle_by_rev() {
 }
 
 #[test]
+fn a_toggle_under_a_flavour_without_task_lists_says_the_line_is_not_a_task() {
+    let workspace = sandbox("commonmark");
+    let config = workspace.parent().unwrap().join("cold-lava/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "[markdown]\nflavour = \"commonmark\"\n").unwrap();
+    let note = workspace.join("Journal/2026-11-05.md");
+    let before = std::fs::read(&note).unwrap();
+    for line in [1, 7] {
+        let out = cold_lava(&workspace)
+            .args(["task", "toggle", &format!("{}:{line}", note.display())])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains(&format!("line {line} of ")) && stderr.contains("is not a task"),
+            "{stderr}"
+        );
+    }
+    assert_eq!(std::fs::read(&note).unwrap(), before, "nothing is written");
+    let _ = std::fs::remove_dir_all(workspace.parent().unwrap());
+}
+
+#[test]
 fn item_set_writes_one_cell_and_refuses_a_stale_rev() {
     let workspace = sandbox("set");
     let v = workspace.to_str().unwrap();
