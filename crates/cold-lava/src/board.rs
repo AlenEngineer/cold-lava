@@ -530,7 +530,9 @@ impl Board {
             let news = core.take_item_news();
             self.noticed(core, &events);
             for (owner, news) in &news {
-                self.heard(core, owner, news);
+                if Board::hears(owner) {
+                    self.heard(core, news);
+                }
             }
             for ext in self.asking.clone() {
                 let effects = registry.call(ext, Some(&mut *core), |e, host| e.poll(host));
@@ -652,17 +654,18 @@ impl Board {
         }
     }
 
-    /// Item news for `owner`'s subscriptions: true when it was the canvas's, as which the
-    /// placed shapes and the shape editor's preview are subscribed.
-    pub fn heard(&mut self, core: &Core, owner: &str, news: &News) -> bool {
-        let mine = owner == crate::bind::OWNER;
-        if mine {
-            self.live.heard(core, news);
-            if let Some(editor) = &mut self.editor {
-                editor.heard(core, news);
-            }
+    /// Whether item news for `client`'s subscriptions is the board's: the canvas's, as which
+    /// the placed shapes and the shape editor's preview are subscribed.
+    pub fn hears(client: &str) -> bool {
+        client == crate::bind::OWNER
+    }
+
+    /// Item news for one of the board's subscriptions (`hears`).
+    pub fn heard(&mut self, core: &Core, news: &News) {
+        self.live.heard(core, news);
+        if let Some(editor) = &mut self.editor {
+            editor.heard(core, news);
         }
-        mine
     }
 
     /// Once a frame: binds shapes that are new or changed, asks the extensions that ship
