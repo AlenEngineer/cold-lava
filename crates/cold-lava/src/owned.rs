@@ -209,7 +209,7 @@ fn made(core: &mut Core, registry: &mut Registry, rel: &str, edit: &Edit) -> Res
         Answer::Later(ticket) => {
             let mut answer = None;
             Owners::new(registry, core).serve(core, |c| {
-                let answers = c.take_edited().into_iter();
+                let mut answers = c.take_edited().into_iter();
                 answer = answers.find_map(|(_, t, a)| (t == ticket).then_some(a));
                 answer.is_some()
             });
