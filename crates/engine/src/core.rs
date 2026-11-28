@@ -2291,7 +2291,7 @@ mod tests {
             restored.path, kept.kept,
             "where it was, under its hidden name"
         );
-        assert_eq!(core.kept_texts().kept, [kept.clone()]);
+        assert_eq!(core.kept_texts().kept, std::slice::from_ref(kept));
         assert!(core.poll().contains(&Event::KeptChanged));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&bin);
