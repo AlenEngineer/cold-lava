@@ -14,9 +14,11 @@ use crate::owner::cache::{FileRead, Kind as OwnedKind, Owners};
 use crate::owner::edits::{Edits, FileEdit, ItemEdit, ToWrite};
 use crate::owner::given::{self, Change, Given};
 use crate::owner::markdown::{self, After};
-use crate::read;
-use crate::trash::{Bin, Trashed, system_bin};
+use crate::read::{self, Seen};
+use crate::rel_path;
+use crate::trash::{self, Bin, system_bin};
 use crate::workspace::{self, NoteChange, Owned, Workspace};
+use crate::write::WriteError;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -746,23 +748,27 @@ impl Core {
         expect: &str,
     ) -> Result<files::Deleted, gateway::Error> {
         let rel = &files::normal_or_kept(self.root(), rel)?;
-        let trashed = files::delete(self.root(), rel, expect, self.system_trash.as_ref())?;
-        let went = trashed.went;
-        let trashed = self.keep_deleted(by, rel, trashed);
-        Ok(files::Deleted { trashed, went })
+        let seen = files::to_delete(self.root(), rel, expect)?;
+        let deleted = self.trash_seen(by, &seen);
+        deleted.map_err(files::moved(self.root(), rel))
     }
 
-    /// What `by` just put in the trash from `rel` (`delete_file`, a merge's source): read again
-    /// at once, its events ending with `Deleted` for the next `poll`, and kept under the token
-    /// `restore_file` takes.
-    fn keep_deleted(&mut self, by: &str, rel: &str, trashed: Trashed) -> files::TrashId {
+    /// The core's delete, on behalf of `by`, of what was `seen` (`delete_file`, a merge's
+    /// source): to the trash the workspace's `trashOption` names, refused if it changed since.
+    /// What went is read again at once, its events ending with `Deleted` (named by its path in
+    /// the workspace) for the next `poll`, and kept under the token `restore_file` takes. Each
+    /// caller words a refusal its own way.
+    fn trash_seen(&mut self, by: &str, seen: &Seen) -> Result<files::Deleted, WriteError> {
+        let trashed = trash::delete(self.root(), seen, self.system_trash.as_ref())?;
+        let went = trashed.went;
         let mut events = self.moved(&trashed.from, trashed.at.is_dir());
         events.push(Event::Deleted {
-            path: rel.to_string(),
+            path: rel_path::or_whole(self.root(), seen.path()),
             by: by.to_string(),
         });
         self.announce(events);
-        self.trashed.keep(by, trashed)
+        let trashed = self.trashed.keep(by, trashed);
+        Ok(files::Deleted { trashed, went })
     }
 
     /// `workspace/restore` on behalf of `by`: what a `workspace/delete` of this core answered
@@ -2018,7 +2024,9 @@ mod tests {
         let mut m = merge::plan(&core.index, source, target).unwrap();
         assert_eq!(m.links(), 1, "the CSV's link is counted");
         let bin = crate::trash::Bin::Folder(dir.join("bin"));
-        let early = merge::apply(&m, |_| panic!("trashed before csv-table answered"));
+        let early = merge::apply(&m, core.root(), |_| {
+            panic!("trashed before csv-table answered")
+        });
         assert!(early.is_err(), "not before csv-table answered");
         core.set_system_trash(Some(bin));
         let Applying::Later(ticket) = core.apply("test", &mut m) else {

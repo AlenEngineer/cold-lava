@@ -45,7 +45,6 @@ pub enum Property {
 /// Everything merging one note into another changes. Nothing is written until `apply`.
 #[derive(Clone, Debug)]
 pub struct Merge {
-    root: PathBuf,
     /// Workspace-relative, with `.md`.
     pub source: String,
     pub target: String,
@@ -81,8 +80,6 @@ impl Merge {
 #[derive(Clone, Debug)]
 pub struct Merged {
     root: PathBuf,
-    /// Workspace-relative, with `.md`: what `undo` restores to, through `files::resolve`.
-    source: String,
     /// Where the source was, for the menu to show and open; `undo` never acts on it.
     pub source_path: PathBuf,
     pub target_path: PathBuf,
@@ -138,7 +135,6 @@ pub fn plan(ix: &Index, source: usize, target: usize) -> Result<Merge> {
     let appended = body.lines().count();
     let new_text = append(&merged, body);
     Ok(Merge {
-        root: ix.workspace.root.clone(),
         source: source_rel,
         target_edit: FileEdit {
             file: target_rel.clone(),
@@ -325,16 +321,19 @@ fn add_lines(text: &str, key: &str, lines: &str, style: &Style) -> String {
     }
 }
 
-/// Carry out a merge: refuse if any file changed since it was planned, or a file another owner
-/// reads has no new text from it yet (`Core::relink`), write the target and every file whose links
-/// change (putting back the ones written if one fails), then send the source to the trash with
-/// `trash`: the core's delete (`Core::apply`), which gives back the token that restores it.
+/// Carry out a merge in the workspace at `root` (the core's, `Core::apply`): refuse if any file
+/// changed since it was planned, or a file another owner reads has no new text from it yet
+/// (`Core::relink`), write the target and every file whose links change (putting back the ones
+/// written if one fails), then send the source to the trash with `trash`: the core's delete,
+/// which gives back the token that restores it.
 pub(crate) fn apply(
     m: &Merge,
+    root: &Path,
     trash: impl FnOnce(&Seen) -> Result<TrashId, write::WriteError>,
 ) -> Result<Merged> {
     rename::check_answered(&m.edits)?;
-    let source = Seen::kept(&m.source_path, m.source_text.as_bytes());
+    let source_path = root.join(&m.source);
+    let source = Seen::kept(&source_path, m.source_text.as_bytes());
     match source.unchanged() {
         Ok(()) => {}
         Err(write::WriteError::Io(_, e)) => {
@@ -346,12 +345,11 @@ pub(crate) fn apply(
         ),
     }
     rename::check_unchanged(m.writes(), "merge")?;
-    let written = Written::all(&m.root, m.writes())?;
+    let written = Written::all(root, m.writes())?;
     match trash(&source) {
         Ok(trashed) => Ok(Merged {
-            root: m.root.clone(),
-            source: m.source.clone(),
-            source_path: m.source_path.clone(),
+            root: root.to_path_buf(),
+            source_path,
             target_path: m.target_path.clone(),
             trashed,
             written,
@@ -362,7 +360,7 @@ pub(crate) fn apply(
             // shows it before it is cut.
             let err = match err {
                 write::WriteError::Link(link) => {
-                    write::WriteError::Link(rel_path::or_whole(&m.root, &link).into())
+                    write::WriteError::Link(rel_path::or_whole(root, &link).into())
                 }
                 err => err,
             };
@@ -378,24 +376,11 @@ pub(crate) fn apply(
 }
 
 /// Undo a merge: the source comes back from the trash with `restore` (the core's, by the token
-/// its delete kept: `Core::undo_merge`) and every file written goes back to what it held.
-/// Refused, with nothing changed, if one of them was edited since, the source's path is taken,
-/// or a folder on the way to it is now a symlink (`files::resolve`, #397).
+/// its delete kept: `Core::undo_merge`, which refuses when its path is taken or a folder on the
+/// way to it is a symlink) and every file written goes back to what it held. Refused, with
+/// nothing changed, if one of them was edited since, or as `restore` refuses.
 pub(crate) fn undo(m: &Merged, restore: impl FnOnce(&TrashId) -> Result<()>) -> Result<()> {
     m.written.check("merge")?;
-    let path = crate::files::resolve(&m.root, &m.source);
-    let there = path
-        .as_ref()
-        .map_or_else(|_| m.root.join(&m.source), Clone::clone);
-    if write::taken(&there) {
-        bail!(
-            "{} exists again; the merge can't be undone",
-            there.display()
-        );
-    }
-    if let Err(e) = path {
-        bail!("{e}; the merge can't be undone");
-    }
     restore(&m.trashed)?;
     m.written.put_back().context("putting the files back")?;
     Ok(())
@@ -404,32 +389,25 @@ pub(crate) fn undo(m: &Merged, restore: impl FnOnce(&TrashId) -> Result<()>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::files::Trash;
+    use crate::core::{Applying, Core, NotApplied};
     use crate::trash::Bin;
     use crate::workspace;
-    use std::cell::RefCell;
 
-    thread_local! {
-        /// What the core keeps of each delete, by token, played here for the tests that make
-        /// and undo a merge without one.
-        static TRASHED: RefCell<Trash> = RefCell::default();
+    /// A core on the workspace `ix` was read from, as the menu holds one, with `system` as its
+    /// system trash.
+    fn open_core(ix: &Index, system: Option<Bin>) -> Core {
+        let mut core = Core::open(&ix.workspace.root, Default::default()).unwrap();
+        core.set_system_trash(system);
+        core
     }
 
-    /// `super::apply` with the core's delete played: to `system`, or the workspace's `.trash`.
-    fn apply(m: &Merge, system: Option<&Bin>) -> Result<Merged> {
-        super::apply(m, |seen| {
-            let trashed = trash::delete(&m.root, seen, system)?;
-            Ok(TRASHED.with(|t| t.borrow_mut().keep("test", trashed)))
-        })
-    }
-
-    /// `super::undo` with the core's restore played, back where the source was.
-    fn undo(m: &Merged) -> Result<()> {
-        super::undo(m, |id| {
-            let trashed = TRASHED.with(|t| t.borrow().get("test", id).cloned());
-            trash::restore(&trashed.context("no such token")?, &m.source_path)?;
-            Ok(())
-        })
+    /// `m` made through `core`, as the menu makes it (`Core::apply`).
+    fn apply(core: &mut Core, m: &Merge) -> Result<Merged> {
+        match core.apply("test", &mut m.clone()) {
+            Applying::Now(Ok(made)) => Ok(made),
+            Applying::Now(Err(NotApplied::Failed(e))) => Err(e),
+            made => panic!("not made at once: {made:?}"),
+        }
     }
 
     fn workspace_with(name: &str, files: &[(&str, &str)]) -> (PathBuf, Index) {
@@ -504,7 +482,7 @@ mod tests {
             "colour is the same in both"
         );
         let system = Bin::Folder(dir.join("system-trash"));
-        let done = apply(&m, Some(&system)).unwrap();
+        let done = apply(&mut open_core(&ix, Some(system)), &m).unwrap();
         assert_eq!(
             read(&dir, "Lava.md"),
             "---\ntags: [concept, lava]\naliases: [Ropy lava, Pāhoehoe]\nstatus: draft # mine\n\
@@ -559,9 +537,9 @@ mod tests {
         let mut m = merge(&ix, "A/Pāhoehoe", "B/Lava");
         assert_eq!(m.target_edit.links, 1);
         assert_eq!(m.own_links, 1, "./Sib, relative to the source's folder");
-        assert!(apply(&m, None).is_err(), "not before the canvas's owner");
-        let mut core = crate::core::Core::open(&ix.workspace.root, Default::default()).unwrap();
-        let made = core.apply("test", &mut m);
+        let early = super::apply(&m, &ix.workspace.root, |_| panic!("trashed"));
+        assert!(early.is_err(), "not before the canvas's owner");
+        let made = open_core(&ix, None).apply("test", &mut m);
         let at_once = matches!(&made, crate::core::Applying::Now(Ok(_)));
         assert!(at_once, "it answers at once: {made:?}");
         assert_eq!(
@@ -598,25 +576,30 @@ mod tests {
             ("Kīlauea.md", "[[Pāhoehoe]]\n"),
         ];
         let (dir, ix) = workspace_with("guard", &files);
+        let mut core = open_core(&ix, None);
         let m = merge(&ix, "Pāhoehoe", "Lava");
         std::fs::write(dir.join("workspace/Kīlauea.md"), "[[Pāhoehoe]] edited\n").unwrap();
-        assert!(apply(&m, None).is_err());
+        assert!(apply(&mut core, &m).is_err());
         assert_eq!(read(&dir, "Lava.md"), "# Lava\n");
         assert_eq!(read(&dir, "Pāhoehoe.md"), "Smooth.\n");
         let _ = std::fs::remove_dir_all(&dir);
 
         let (dir, ix) = workspace_with("undo", &files);
+        let mut core = open_core(&ix, None);
         let m = merge(&ix, "Pāhoehoe", "Lava");
-        let done = apply(&m, None).unwrap();
+        let done = apply(&mut core, &m).unwrap();
         assert_eq!(read(&dir, "Kīlauea.md"), "[[Lava]]\n");
         std::fs::write(dir.join("workspace/Kīlauea.md"), "edited\n").unwrap();
-        assert!(undo(&done).is_err(), "Kīlauea changed since");
+        assert!(
+            core.undo_merge("test", &done).is_err(),
+            "Kīlauea changed since"
+        );
         assert!(
             !dir.join("workspace/Pāhoehoe.md").exists(),
             "nothing undone"
         );
         std::fs::write(dir.join("workspace/Kīlauea.md"), "[[Lava]]\n").unwrap();
-        undo(&done).unwrap();
+        core.undo_merge("test", &done).unwrap();
         for (rel, text) in files {
             assert_eq!(read(&dir, rel), text);
         }
@@ -636,13 +619,14 @@ mod tests {
             ("Kīlauea.md", "[[Pāhoehoe]]\n"),
         ];
         let (dir, ix) = workspace_with("swapped", &files);
+        let mut core = open_core(&ix, None);
         let m = merge(&ix, "Pāhoehoe", "Lava");
         let copy = dir.join("Kīlauea.md");
         std::fs::write(&copy, "[[Pāhoehoe]]\n").unwrap();
         let at = dir.join("workspace/Kīlauea.md");
         std::os::unix::fs::symlink(&copy, dir.join("workspace/Kīlauea.link")).unwrap();
         std::fs::rename(dir.join("workspace/Kīlauea.link"), &at).unwrap();
-        let err = format!("{:#}", apply(&m, None).unwrap_err());
+        let err = format!("{:#}", apply(&mut core, &m).unwrap_err());
         assert!(err.contains("Kīlauea.md is a symbolic link"), "{err}");
         assert!(err.contains("nothing was changed"), "{err}");
         assert_eq!(read(&dir, "Lava.md"), "# Lava\n");
@@ -655,20 +639,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An undo is refused when a symlink to nothing holds the source's path, as when any other
-    /// entry does: the link stays, and the source stays in the trash (#356).
+    /// An undo is refused when a symlink to nothing holds the source's path, as when a file
+    /// does: the link stays, and the source stays in the trash (#356).
     #[cfg(unix)]
     #[test]
     fn an_undo_onto_a_symlink_to_nothing_is_refused_and_the_link_stays() {
         let files = [("Lava.md", "# Lava\n"), ("Pāhoehoe.md", "Smooth.\n")];
         let (dir, ix) = workspace_with("undo-dangling", &files);
-        let done = apply(&merge(&ix, "Pāhoehoe", "Lava"), None).unwrap();
+        let mut core = open_core(&ix, None);
+        let done = apply(&mut core, &merge(&ix, "Pāhoehoe", "Lava")).unwrap();
         std::os::unix::fs::symlink("Gone.md", &done.source_path).unwrap();
-        let refused = undo(&done).unwrap_err().to_string();
-        let words = "exists again; the merge can't be undone";
-        assert_eq!(refused, format!("{} {words}", done.source_path.display()));
+        let refused = core.undo_merge("test", &done).unwrap_err().to_string();
+        let link = "Pāhoehoe.md is a symbolic link, which the gateway never follows";
+        assert_eq!(refused, format!("{link}; the merge can't be undone"));
         let led = std::fs::read_link(&done.source_path).unwrap();
         assert_eq!(led, Path::new("Gone.md"), "the link stays");
+        assert_eq!(read(&dir, ".trash/Pāhoehoe.md"), "Smooth.\n");
+        std::fs::remove_file(&done.source_path).unwrap();
+        std::fs::write(&done.source_path, "New.\n").unwrap();
+        let refused = core.undo_merge("test", &done).unwrap_err().to_string();
+        let words = "Pāhoehoe.md already exists; the merge can't be undone";
+        assert_eq!(refused, words, "a file there is refused too");
+        assert_eq!(read(&dir, "Pāhoehoe.md"), "New.\n");
         assert_eq!(read(&dir, ".trash/Pāhoehoe.md"), "Smooth.\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -680,12 +672,13 @@ mod tests {
     fn a_merge_into_a_linked_trash_names_it_from_the_workspace() {
         let files = [("Lava.md", "# Lava\n"), ("Pāhoehoe.md", "Smooth.\n")];
         let (dir, ix) = workspace_with("linked-trash", &files);
+        let mut core = open_core(&ix, None);
         let outside = dir.join("outside");
         std::fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("workspace/.trash")).unwrap();
         let err = format!(
             "{:#}",
-            apply(&merge(&ix, "Pāhoehoe", "Lava"), None).unwrap_err()
+            apply(&mut core, &merge(&ix, "Pāhoehoe", "Lava")).unwrap_err()
         );
         assert!(
             err.ends_with(
@@ -706,11 +699,12 @@ mod tests {
     fn an_undo_through_a_folder_that_became_a_symlink_is_refused() {
         let files = [("Lava.md", "# Lava\n"), ("Notes/Pāhoehoe.md", "Smooth.\n")];
         let (dir, ix) = workspace_with("undo-through-link", &files);
-        let done = apply(&merge(&ix, "Notes/Pāhoehoe", "Lava"), None).unwrap();
+        let mut core = open_core(&ix, None);
+        let done = apply(&mut core, &merge(&ix, "Notes/Pāhoehoe", "Lava")).unwrap();
         let outside = dir.join("outside");
         std::fs::rename(dir.join("workspace/Notes"), &outside).unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("workspace/Notes")).unwrap();
-        let refused = undo(&done).unwrap_err().to_string();
+        let refused = core.undo_merge("test", &done).unwrap_err().to_string();
         let link = "Notes/Pāhoehoe.md: Notes is a symbolic link, which the gateway never follows";
         assert_eq!(refused, format!("{link}; the merge can't be undone"));
         assert_eq!(read(&dir, ".trash/Pāhoehoe.md"), "Smooth.\n");
@@ -726,13 +720,14 @@ mod tests {
             ("Kīlauea.md", "[[Pāhoehoe]]\n"),
         ];
         let (dir, ix) = workspace_with("words", &files);
+        let mut core = open_core(&ix, None);
         let m = merge(&ix, "Pāhoehoe", "Lava");
         std::fs::write(dir.join("workspace/Pāhoehoe.md"), "Smooth, edited.\n").unwrap();
-        let changed = apply(&m, None).unwrap_err();
+        let changed = apply(&mut core, &m).unwrap_err();
         let words = "changed since the merge was planned; nothing was changed. Try again.";
         assert_eq!(format!("{changed:#}"), format!("{} {words}", m.source));
         std::fs::remove_file(dir.join("workspace/Pāhoehoe.md")).unwrap();
-        let unread = apply(&m, None).unwrap_err();
+        let unread = apply(&mut core, &m).unwrap_err();
         assert_eq!(unread.to_string(), format!("reading {}", m.source));
         let cause = unread.root_cause().downcast_ref::<std::io::Error>();
         assert_eq!(
@@ -745,13 +740,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         let (dir, ix) = workspace_with("undo-words", &files);
-        let done = apply(&merge(&ix, "Pāhoehoe", "Lava"), None).unwrap();
+        let mut core = open_core(&ix, None);
+        let done = apply(&mut core, &merge(&ix, "Pāhoehoe", "Lava")).unwrap();
         let words = "Kīlauea.md changed since the merge; the merge can't be undone";
         std::fs::write(dir.join("workspace/Kīlauea.md"), "edited\n").unwrap();
-        let edited = undo(&done).unwrap_err().to_string();
+        let edited = core.undo_merge("test", &done).unwrap_err().to_string();
         assert!(edited.ends_with(words), "{edited}");
         std::fs::remove_file(dir.join("workspace/Kīlauea.md")).unwrap();
-        let gone = undo(&done).unwrap_err().to_string();
+        let gone = core.undo_merge("test", &done).unwrap_err().to_string();
         assert_eq!(gone, edited, "a file that can't be read has changed");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -546,12 +546,12 @@ fn sneaked(code: &str) -> Vec<String> {
 
 /// Nothing goes around the lists: no alias or glob of a module a list is about (`guarded`),
 /// no `std::fs` function that changes files and no listed call imported by name, none of the
-/// gateway's own file functions (`files::delete` and the rest, which are the core's to call),
+/// gateway's own file functions (`files::to_delete` and the rest, which are the core's to call),
 /// no file made or copied another way, and no `Core` taken apart for its `index`
 /// (`let Core { index, .. } = …`).
 #[test]
 fn nothing_goes_around_the_lists() {
-    let own = ["delete", "restore", "create_folder", "create", "replace"];
+    let own = ["to_delete", "restore", "create_folder", "create", "replace"];
     let found = per_file(&sources(), |code| {
         let gateway = named_in(code, GATEWAY_FILES).into_iter();
         let gateway = gateway.filter(|name| own.contains(&name.as_str()));

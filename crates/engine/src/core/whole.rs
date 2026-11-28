@@ -9,9 +9,11 @@
 //! which keeps only the plan, to show it, and the ticket.
 //!
 //! Each is made on behalf of a client (`by`), as a delete is: a merge's source goes to the
-//! trash through the core's own delete (`Core::delete_file`'s), so it is read again at once,
-//! `Event::Deleted` names who merged, and its undo puts it back by the token kept for them
-//! (`Core::undo_merge`, through `Core::restore_file`).
+//! trash through the core's own delete (`Core::trash_seen`, `Core::delete_file`'s), so it is
+//! read again at once, `Event::Deleted` names who merged, and its undo puts it back by the token
+//! kept for them (`Core::undo_merge`, through `Core::restore_file`). Only that half of an undo is
+//! the core's so far: the files a merge or a recipe wrote still go back from what the frontend
+//! holds (`Merged`, `Applied`), until the core keeps those by ticket too (#193).
 //!
 //! Reading the workspace again afterwards is still the caller's, because the callers read it
 //! again three ways: the menu rescans, the command line only saves what the owners read
@@ -26,9 +28,8 @@ use crate::owner::edits::{Answers, Relinked};
 use crate::read::{self, Seen};
 use crate::recipe::{self, Applied};
 use crate::rename::{self, FileEdit};
-use crate::trash;
 use crate::write::WriteError;
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use std::path::{Path, PathBuf};
 
 /// A plan the core makes (`Core::apply`): a rename, a merge or a recipe, and nothing else. The
@@ -66,10 +67,11 @@ mod sealed {
 use sealed::Sealed;
 
 /// What writing a plan takes from the core: the workspace's root, which a rename checks and
-/// makes its moves under (no plan carries one, so no frontend names it), and the core's delete,
-/// on behalf of the client `by`, which a merge's source goes through. Nothing outside this
-/// module can make one, so only the core calls `Planned::write`. The seal (`Sealed`), not this,
-/// is what keeps a frontend's type from being a plan.
+/// makes its moves under and a merge writes and trashes under (no plan carries one, so no
+/// frontend names it), and the core's delete, on behalf of the client `by`, which a merge's
+/// source goes through. Nothing outside this module can make one, so only the core calls
+/// `Planned::write`. The seal (`Sealed`), not this, is what keeps a frontend's type from being a
+/// plan.
 pub struct Door<'a> {
     core: &'a mut Core,
     by: &'a str,
@@ -80,12 +82,10 @@ impl Door<'_> {
         self.core.root()
     }
 
-    /// The core's delete of what was `seen` at `rel`, as `by`: to the trash the workspace's
-    /// `trashOption` names, refused if it changed since; its token, for `Core::undo_merge`.
-    fn trash(&mut self, rel: &str, seen: &Seen) -> Result<TrashId, WriteError> {
-        let system = self.core.system_trash.as_ref();
-        let trashed = trash::delete(self.core.root(), seen, system)?;
-        Ok(self.core.keep_deleted(self.by, rel, trashed))
+    /// The core's delete of what was `seen`, as `by` (`Core::trash_seen`); its token, for
+    /// `Core::undo_merge`.
+    fn trash(&mut self, seen: &Seen) -> Result<TrashId, WriteError> {
+        Ok(self.core.trash_seen(self.by, seen)?.trashed)
     }
 }
 
@@ -125,7 +125,8 @@ impl Planned for Merge {
     type Made = Merged;
 
     fn write(&self, mut door: Door<'_>) -> anyhow::Result<Merged> {
-        merge::apply(self, |seen| door.trash(&self.source, seen))
+        let root = door.root().to_path_buf();
+        merge::apply(self, &root, |seen| door.trash(seen))
     }
 }
 
@@ -201,8 +202,10 @@ impl Core {
 
     /// Undo the merge `m` on behalf of `by`, who made it: its source comes back through
     /// `restore_file` by the token its delete kept, then every file it wrote goes back to what
-    /// it held (`merge::undo`). Refused, with nothing changed, when it was made in another
-    /// workspace, or as `merge::undo` and `restore_file` refuse.
+    /// it held (`merge::undo`), from `m`, which the frontend holds: only the source is kept by
+    /// the core so far (#193). Refused, with nothing changed, when it was made in another
+    /// workspace, or as `merge::undo` and `restore_file` refuse (its path is taken, or a folder
+    /// on the way to it is a symlink), in `restore_file`'s words.
     pub fn undo_merge(&mut self, by: &str, m: &Merged) -> anyhow::Result<()> {
         if m.root() != self.root() {
             let name = m.root().file_name().unwrap_or_default().to_string_lossy();
@@ -213,8 +216,8 @@ impl Core {
                 trashed: trashed.clone(),
                 to: None,
             };
-            self.restore_file(by, &restore)?;
-            Ok(())
+            let restored = self.restore_file(by, &restore).map(drop);
+            restored.map_err(|e| anyhow!("{e}; the merge can't be undone"))
         })
     }
 
