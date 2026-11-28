@@ -12,7 +12,6 @@
 
 use std::borrow::Cow;
 use std::path::Path;
-use std::sync::OnceLock;
 
 use serde::Serialize;
 
@@ -132,21 +131,12 @@ pub struct Readings {
     pub notes: Vec<String>,
 }
 
-static CONFIGURED: OnceLock<Vec<Layer>> = OnceLock::new();
-
-/// The layers every workspace gets before its own: config.toml's, which the frontend reads and
-/// sets once at startup.
-pub fn set_configured(layers: Vec<Layer>) {
-    let _ = CONFIGURED.set(layers);
-}
-
-/// The readings a workspace's notes are read with: the built-in ones, the configured layers,
-/// then the workspace's own file.
-pub fn for_workspace(root: &Path) -> Readings {
-    let configured = CONFIGURED.get().cloned().unwrap_or_default();
+/// The readings a workspace's notes are read with: the built-in ones, the `configured` layers
+/// (config.toml's, as the frontend handed them in), then the workspace's own file.
+pub fn for_workspace(root: &Path, configured: &[Layer]) -> Readings {
     load(
         std::iter::once(Layer::built_in())
-            .chain(configured)
+            .chain(configured.iter().cloned())
             .chain(Layer::workspace(root)),
     )
 }
@@ -561,7 +551,7 @@ mod tests {
             "version = 1\n[item]\ndue = { rest = true }\nstars = { marker = \"★\" }\n",
         )
         .unwrap();
-        let found = types::for_workspace(&dir);
+        let found = types::for_workspace(&dir, &crate::configured::Configured::default());
         assert_eq!(found.errors.len(), 1, "{:?}", found.errors);
         assert!(
             found.errors[0].one_line().ends_with(
@@ -572,7 +562,7 @@ mod tests {
             found.errors
         );
         assert!(found.types.iter().any(|t| t.name == "task"));
-        let readings = for_workspace(&dir);
+        let readings = for_workspace(&dir, &[]);
         assert_eq!(
             readings.reading(On::Item, "due").unwrap().origin,
             Origin::BuiltIn,

@@ -292,7 +292,7 @@ fn read(root: &Path, start: Start) -> Result<Editor> {
         .into_owned();
     let (id, def, replacing) = match start {
         Start::New => {
-            let taken = shapes::for_workspace(root);
+            let taken = shapes::for_workspace(root, &crate::config::configured().shapes);
             let id = (1..)
                 .map(|n| format!("shape{n}"))
                 .find(|id| taken.get(id).is_none())
@@ -368,7 +368,12 @@ impl Editor {
     /// Loads the draft as the workspace's shape, to draw and check it; the preview is bound
     /// to it again by `settle`.
     fn reload(&mut self) {
-        self.loaded = shapes::with_draft(&self.root, &self.id, &self.def);
+        self.loaded = shapes::with_draft(
+            &self.root,
+            &crate::config::configured().shapes,
+            &self.id,
+            &self.def,
+        );
         self.errors = draft_errors(&self.loaded.errors, &self.id);
         if self.errors.is_empty()
             && let Some(l) = self.loaded.get(&self.id)

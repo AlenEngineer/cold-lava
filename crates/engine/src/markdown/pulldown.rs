@@ -857,7 +857,7 @@ mod tests {
     fn the_tree_gives_the_reader_the_doc_pulldown_cmark_gave() {
         let mut differ = Vec::new();
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
-        let flavour = flavour_for(&workspace);
+        let flavour = flavour_for(&workspace, None);
         // The one note of the repository that reads otherwise is the Kanban example, whose
         // frontmatter starts with a blank line (`DIFFERENT`).
         let kanban = |text: &str| text.starts_with("---\n\n");
@@ -909,7 +909,7 @@ mod tests {
     fn doc_cost() {
         use std::time::{Duration, Instant};
         let dir = std::env::var("COLD_LAVA_BENCH_WS").expect("COLD_LAVA_BENCH_WS");
-        let flavour = flavour_for(Path::new(&dir));
+        let flavour = flavour_for(Path::new(&dir), None);
         let workspace: Vec<String> = walkdir::WalkDir::new(&dir)
             .into_iter()
             .flatten()

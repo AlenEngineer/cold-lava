@@ -9,6 +9,7 @@
 //! and which inline types sit in its text. A task is a list item the built-in `task` type
 //! (`types/task.toml`) matches.
 
+use crate::configured::Configured;
 use crate::cst::{self, Kind, Step};
 use crate::daily;
 use crate::identity;
@@ -42,19 +43,20 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn load(root: &Path) -> Settings {
-        Settings::load_with(root, types::for_workspace(root))
+    /// The workspace's settings, with what the frontend `configured`.
+    pub fn load(root: &Path, configured: &Configured) -> Settings {
+        Settings::load_with(root, configured, types::for_workspace(root, configured))
     }
 
     /// The workspace's settings, with these types.
-    pub fn load_with(root: &Path, types: Types) -> Settings {
+    pub fn load_with(root: &Path, configured: &Configured, types: Types) -> Settings {
         Settings::with(
-            markdown::flavour_for(root),
+            markdown::flavour_for(root, configured.flavour.as_ref()),
             TasksSettings::load(root),
             daily::Settings::load(root),
             templates::Settings::load(root),
             types,
-            attributes::for_workspace(root),
+            attributes::for_workspace(root, &configured.attributes),
         )
     }
 
@@ -2075,7 +2077,7 @@ fields.w = { capture = "w" }
     fn the_tree_reads_items_as_pulldown_cmark_did() {
         let mut differ = Vec::new();
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
-        let s = Settings::load(&workspace);
+        let s = Settings::load(&workspace, &Configured::default());
         for e in walkdir::WalkDir::new(&workspace).into_iter().flatten() {
             let p = e.path();
             if p.extension().is_some_and(|x| x == "md") {
@@ -2227,7 +2229,7 @@ fields.what = { rest = true }
                 false => types::Layer::built_in(),
             };
             let layers = std::iter::once(built_in).chain(types::Layer::workspace(&workspace));
-            Settings::load_with(&workspace, types::load(layers))
+            Settings::load_with(&workspace, &Configured::default(), types::load(layers))
         };
         let (now, then) = (of_workspace(false), of_workspace(true));
         assert!(now.matcher.names().any(|n| n == "volcano"));
@@ -2428,8 +2430,9 @@ fields.what = { rest = true }
         use std::time::{Duration, Instant};
         let dir = std::env::var("COLD_LAVA_BENCH_WS").expect("COLD_LAVA_BENCH_WS");
         let root = Path::new(&dir);
-        let typed = Settings::load(root);
-        let plain = Settings::load_with(root, types::load(Vec::<types::Layer>::new()));
+        let none = Configured::default();
+        let typed = Settings::load(root, &none);
+        let plain = Settings::load_with(root, &none, types::load(Vec::<types::Layer>::new()));
         let notes: Vec<(String, String)> = walkdir::WalkDir::new(root)
             .into_iter()
             .flatten()

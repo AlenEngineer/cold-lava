@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn a_types_items_are_rows_and_its_schema_the_columns() {
         let dir = example("rows");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut registry = Registry::empty();
         let mut host = registry.screen(TABLE, &mut core);
         let counts = types(&mut host).unwrap();
@@ -543,7 +543,7 @@ mod tests {
     fn the_table_is_an_extension_of_the_gateways() {
         use crate::ext::{Effect, ExtId};
         let dir = example("extension");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut r = Registry::new(vec![Box::new(Tables::default())]);
         let ext = ExtId(0);
         let run = CommandRequest::Run {
@@ -649,7 +649,7 @@ mod tests {
     #[test]
     fn the_table_follows_its_subscription() {
         let dir = example("follow");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut registry = Registry::empty();
         let mut feed = {
             let mut host = registry.screen(TABLE, &mut core);
@@ -718,7 +718,7 @@ mod tests {
     #[test]
     fn the_rows_are_in_the_query_s_order_after_a_change_and_after_a_reset() {
         let dir = example("order");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut registry = Registry::empty();
         let mut feed = {
             let mut host = registry.screen(TABLE, &mut core);

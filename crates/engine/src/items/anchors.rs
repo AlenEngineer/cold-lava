@@ -264,7 +264,8 @@ mod tests {
         use crate::edit::{self, SetField};
         use crate::items::Data;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
-        let ix = crate::index::Index::build(crate::workspace::scan(&root).unwrap());
+        let ix =
+            crate::index::Index::build(crate::workspace::scan(&root, Default::default()).unwrap());
         let ws = ix.workspace.item_settings();
         let tricky = settings("obsidian");
         let mut notes: Vec<(String, String, &items::Settings)> = (items::tests::TRICKY.iter())

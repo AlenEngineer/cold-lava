@@ -210,17 +210,10 @@ impl Source<'_> {
     }
 }
 
-static CONFIGURED: OnceLock<Option<Flavour>> = OnceLock::new();
-
-/// The flavour `config.toml` chose, which the frontend reads and sets once at startup.
-pub fn set_configured(flavour: Option<Flavour>) {
-    let _ = CONFIGURED.set(flavour);
-}
-
-/// The flavour set in `config.toml`, else `obsidian` for a folder Obsidian has opened (it has
-/// `.obsidian/`), else `github`.
-pub fn flavour_for(workspace_root: &Path) -> Flavour {
-    CONFIGURED.get().cloned().flatten().unwrap_or_else(|| {
+/// The `configured` flavour (`config.toml`'s, which the frontend hands in), else `obsidian`
+/// for a folder Obsidian has opened (it has `.obsidian/`), else `github`.
+pub fn flavour_for(workspace_root: &Path, configured: Option<&Flavour>) -> Flavour {
+    configured.cloned().unwrap_or_else(|| {
         let name = if workspace_root.join(".obsidian").is_dir() {
             "obsidian"
         } else {
@@ -2249,9 +2242,11 @@ mod tests {
     fn flavour_is_detected_from_the_workspace() {
         let dir = std::env::temp_dir().join(format!("cold-lava-flavour-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(flavour_for(&dir).name, "github");
+        assert_eq!(flavour_for(&dir, None).name, "github");
         std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
-        assert_eq!(flavour_for(&dir).name, "obsidian");
+        assert_eq!(flavour_for(&dir, None).name, "obsidian");
+        let chosen = Flavour::built_in("commonmark").unwrap();
+        assert_eq!(flavour_for(&dir, Some(&chosen)).name, "commonmark");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -246,7 +246,7 @@ mod tests {
         std::fs::write(dir.join("Notes/Lava.md"), "ours").unwrap();
         let kept = ".Lava.cold-lava-kept-1700000000-0.md";
         std::fs::write(dir.join("Notes").join(kept), "theirs").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let bin = dir.with_extension("bin");
         core.set_system_trash(Some(crate::trash::Bin::Freedesktop(bin.clone())));
         let mut r = Registry::new(vec![Box::new(Kept::default()) as Box<dyn Extension>]);

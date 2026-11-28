@@ -391,7 +391,7 @@ mod tests {
             "- [ ] Pay rent\n- [ ] Call the plumber\n",
         )
         .unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let tickers = [
             ("blind", vec![]),
             ("look", vec![ItemsRead]),
@@ -584,7 +584,7 @@ mod tests {
             (vec![R], Ok("2 volcanoes"), Some(Err(Reason::Forbidden))),
             (vec![R, E], Ok("2 volcanoes"), Some(Ok(()))),
         ] {
-            let mut core = Core::open(&dir).unwrap();
+            let mut core = Core::open(&dir, Default::default()).unwrap();
             let mut r = Registry::new(vec![Box::new(Tally {
                 permissions: permissions.clone(),
                 steps: json!([{"edit": {"item": "clicked",
@@ -671,7 +671,7 @@ mod tests {
         ];
         for (steps, problem) in cases {
             let (dir, shapes) = tally_workspace("ext-shape-unchecked");
-            let mut core = Core::open(&dir).unwrap();
+            let mut core = Core::open(&dir, Default::default()).unwrap();
             let mut r = Registry::new(vec![Box::new(Tally {
                 permissions: vec![ItemsRead, ItemsEdit, FilesWrite],
                 steps,
@@ -834,7 +834,7 @@ mod tests {
         std::fs::write(dir.join("Eruptions.csv"), "name\n").unwrap();
         let kept = ".Eruptions.cold-lava-kept-5-0.csv";
         std::fs::write(dir.join(kept), "theirs").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         core.set_system_trash(None);
         let rev = files::read(core.root(), kept).unwrap().rev;
         let owner = |name, opens, permissions| Owner {
@@ -882,7 +882,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
         std::fs::write(dir.join("Plan.md"), "- [ ] Pay rent\n").unwrap();
         std::fs::write(dir.join("Eruptions.csv"), "name\nKrakatoa\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let owner = |name, opens, permissions| Owner {
             name,
             opens,

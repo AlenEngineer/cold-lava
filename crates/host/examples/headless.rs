@@ -22,7 +22,7 @@ fn main() {
         std::process::exit(2);
     };
     let seconds = args.next().and_then(|s| s.parse().ok()).unwrap_or(3);
-    let mut core = match Core::open(Path::new(&root)) {
+    let mut core = match Core::open(Path::new(&root), Default::default()) {
         Ok(core) => core,
         Err(e) => {
             eprintln!("{root}: {e}");

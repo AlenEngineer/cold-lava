@@ -461,7 +461,10 @@ impl Board {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let live = Live::new(crate::shapes::for_workspace(&workspace_root));
+        let live = Live::new(crate::shapes::for_workspace(
+            &workspace_root,
+            &crate::config::configured().shapes,
+        ));
         let sel = node.filter(|id| doc.nodes.iter().any(|n| n.id == *id));
         Ok(Board {
             live,
@@ -1042,7 +1045,8 @@ impl Board {
         let members: Vec<String> = (self.group_members(&sel).into_iter())
             .filter(|id| self.live.is_shape(id))
             .collect();
-        let loaded = crate::shapes::for_workspace(&self.workspace_root);
+        let loaded =
+            crate::shapes::for_workspace(&self.workspace_root, &crate::config::configured().shapes);
         let taken = |id: &str| loaded.get(id).is_some();
         let start = match members.as_slice() {
             [] => {
@@ -1131,7 +1135,10 @@ impl Board {
         };
         if editor.close(core) {
             self.live.close(core);
-            self.live = Live::new(crate::shapes::for_workspace(&self.workspace_root));
+            self.live = Live::new(crate::shapes::for_workspace(
+                &self.workspace_root,
+                &crate::config::configured().shapes,
+            ));
             self.flash("shapes read again: s places the one you made");
         }
     }
@@ -4031,7 +4038,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("B.canvas");
         std::fs::write(&path, canvas(nodes)).unwrap();
-        let core = Core::open(&dir).unwrap();
+        let core = Core::open(&dir, Default::default()).unwrap();
         (dir, path, core)
     }
 
@@ -4140,7 +4147,7 @@ mod tests {
         use crate::shapes::{Layer, load};
         let (dir, path, _) = workspace(name, Vec::new());
         std::fs::write(dir.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
-        let core = Core::open(&dir).unwrap();
+        let core = Core::open(&dir, Default::default()).unwrap();
         let registry = Registry::new(vec![Box::new(Chatty { pushy })]);
         let chatty = registry.by_name("chatty").unwrap();
         let shape: toml::Table = toml::from_str(
@@ -4721,7 +4728,7 @@ mod tests {
     #[test]
     fn twins_survive_an_outside_change_merged_into_an_edit() {
         let (dir, path, mut b) = twins_board("board-twins-merge", SECOND);
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut registry = Registry::empty();
         b.mode = Mode::Edit {
             id: SECOND.into(),

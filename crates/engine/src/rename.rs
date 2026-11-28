@@ -792,7 +792,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
-        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let ix = Index::build(workspace::scan(&dir, Default::default()).unwrap());
         (dir, ix)
     }
 
@@ -803,7 +803,7 @@ mod tests {
     /// Apply a plan that changes canvases, as every caller does: through the core
     /// (`Core::apply`), whose canvas owner gives their new texts inside the call.
     fn apply_through_owners(ix: &Index, mut plan: Plan) -> Result<(), crate::core::NotApplied> {
-        let mut core = crate::core::Core::open(&ix.workspace.root).unwrap();
+        let mut core = crate::core::Core::open(&ix.workspace.root, Default::default()).unwrap();
         let crate::core::Applying::Now(made) = core.apply(&mut plan) else {
             panic!("the canvas owner answers at once");
         };
@@ -925,7 +925,7 @@ mod tests {
         assert_eq!(refused, "lava.md already exists");
 
         std::fs::remove_file(dir.join("lava.md")).unwrap();
-        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let ix = Index::build(workspace::scan(&dir, Default::default()).unwrap());
         let upper = ix.by_rel("Lava").unwrap();
         let p = plan(&ix, upper, "lava").unwrap();
         std::fs::write(dir.join("lava.md"), "lower").unwrap();
@@ -968,7 +968,7 @@ mod tests {
             "[a](Lava/%CA%BBA%CA%BB%C4%81%20flow.md) [b](Lava/%CA%BBA%CA%BB%C4%81%20flow.md#Top) \
              [[ʻAʻā flow]]\n![m](Lava/flow%20map.png)\n"
         );
-        let ix = Index::build(crate::workspace::scan(&dir).unwrap());
+        let ix = Index::build(crate::workspace::scan(&dir, Default::default()).unwrap());
         let png = ix
             .by_rel("Notes")
             .and_then(|n| crate::resolver::attachment(&ix, "Lava/flow map.png", Some(n)));
@@ -1608,17 +1608,17 @@ mod tests {
         let (dir, ix) = workspace_with("from-name", &files);
         apply(&plan_folder(&ix, "C# notes", "CSharp").unwrap(), &dir).unwrap();
         assert!(read(&dir, "Rocky.md").starts_with("[cs](<CSharp/Topic.md>) "));
-        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let ix = Index::build(workspace::scan(&dir, Default::default()).unwrap());
         apply(&plan_folder(&ix, "Draft [old]", "Draft").unwrap(), &dir).unwrap();
         assert!(dir.join("Draft/D.md").is_file());
-        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let ix = Index::build(workspace::scan(&dir, Default::default()).unwrap());
         apply(
             &plan(&ix, ix.by_rel("C#").unwrap(), "CSharp").unwrap(),
             &dir,
         )
         .unwrap();
         assert!(dir.join("CSharp.md").is_file() && !dir.join("C#.md").exists());
-        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let ix = Index::build(workspace::scan(&dir, Default::default()).unwrap());
         assert_eq!(
             plan_into(&ix, &["Hash #2.md".to_string()], "CSharp")
                 .unwrap_err()
@@ -1650,7 +1650,7 @@ mod tests {
             "[cs](<../../C%23%20notes/Topic.md>) [h](../../Hash%20%232.md) \
              [s](<../../Hash%20%232.md#Top>)\n"
         );
-        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let ix = Index::build(workspace::scan(&dir, Default::default()).unwrap());
         let topic = ix.by_rel("C# notes/Topic").unwrap();
         let hash = ix.by_rel("Hash #2").unwrap();
         assert!(

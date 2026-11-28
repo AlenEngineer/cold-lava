@@ -624,7 +624,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
-        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let ix = Index::build(workspace::scan(&dir, Default::default()).unwrap());
         (dir, ix)
     }
 
@@ -657,7 +657,7 @@ mod tests {
         assert_eq!(read(&dir, "A.md"), "---\ntags: [lava]\n---\n#lava/flow\n");
         let done = apply(&p, &dir).unwrap();
         assert_eq!(read(&dir, "A.md"), "---\ntags: [magma]\n---\n#magma/flow\n");
-        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let ix = Index::build(workspace::scan(&dir, Default::default()).unwrap());
         assert_eq!(ix.workspace.notes[0].tags, ["magma", "magma/flow"]);
         undo(&done).unwrap();
         assert_eq!(read(&dir, "A.md"), "---\ntags: [lava]\n---\n#lava/flow\n");
@@ -722,7 +722,7 @@ mod tests {
         );
 
         std::fs::remove_file(dir.join("B.md")).unwrap();
-        let ix = Index::build(workspace::scan(&dir).unwrap());
+        let ix = Index::build(workspace::scan(&dir, Default::default()).unwrap());
         let done = apply(&rename(&ix, "lava", "magma").unwrap(), &dir).unwrap();
         swap("A.md", "#magma\n");
         assert!(undo(&done).is_err());

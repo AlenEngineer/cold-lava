@@ -770,7 +770,10 @@ impl Home {
             marks: BTreeSet::new(),
             go_to: None,
             reader: None,
-            flavour: markdown::flavour_for(Path::new("")),
+            flavour: markdown::flavour_for(
+                Path::new(""),
+                crate::config::configured().flavour.as_ref(),
+            ),
             zoom: false,
             focus: Focus::Workspaces,
             mode: Mode::Normal,
@@ -1460,7 +1463,7 @@ impl Home {
         }
         self.root = Some(v.path.clone());
         self.views.root = Some(v.path.clone());
-        self.flavour = markdown::flavour_for(&v.path);
+        self.flavour = markdown::flavour_for(&v.path, crate::config::configured().flavour.as_ref());
         self.expanded.clear();
         self.filter.clear();
         self.marks.clear();
@@ -1505,7 +1508,7 @@ impl Home {
         self.links.clear();
         match self.core.as_mut() {
             Some(core) => core.rescan_now(),
-            None => self.core = Core::open(&root).ok(),
+            None => self.core = Core::open(&root, crate::config::configured()).ok(),
         }
         if let Some(ix) = self.core.as_ref().map(|c| &c.index) {
             for (i, n) in ix.workspace.notes.iter().enumerate() {
@@ -1732,7 +1735,7 @@ impl Home {
         };
         self.close_board();
         if self.core.is_none() {
-            self.core = Some(Core::open(&root)?);
+            self.core = Some(Core::open(&root, crate::config::configured())?);
         }
         match board::Board::open(&root, path, node) {
             Ok(b) => {
@@ -3771,7 +3774,7 @@ impl Home {
         self.save_editor();
         let style = match self.core.as_ref() {
             Some(core) => core.index.workspace.style(),
-            None => crate::style::Style::of_root(root),
+            None => crate::style::Style::of_root(root, &crate::config::configured().style),
         };
         let (mut changed, mut unchanged, mut refused) = (Vec::new(), 0, Vec::new());
         for rel in &notes {
@@ -6971,9 +6974,11 @@ mod tests {
             marked: false,
             waiting,
         };
-        let core =
-            Core::open(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"))
-                .unwrap();
+        let core = Core::open(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+            Default::default(),
+        )
+        .unwrap();
         let merge = |waiting| Mode::ConfirmMerge {
             plan: Box::new(crate::merge::plan(&core.index, 0, 1).unwrap()),
             scroll: 0,

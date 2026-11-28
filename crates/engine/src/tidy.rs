@@ -317,7 +317,7 @@ mod tests {
             fs::create_dir_all(dir.join(d)).unwrap();
         }
         fs::write(dir.join("Kept/note.md"), "[[Hub]]").unwrap();
-        let ix = Index::build(crate::workspace::scan(&dir).unwrap());
+        let ix = Index::build(crate::workspace::scan(&dir, Default::default()).unwrap());
         (dir, ix)
     }
 
@@ -397,6 +397,7 @@ mod tests {
         let ix = Index::build(
             crate::workspace::scan(
                 &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+                Default::default(),
             )
             .unwrap(),
         );

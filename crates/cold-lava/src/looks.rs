@@ -249,7 +249,8 @@ mod tests {
     use std::path::Path;
 
     fn example() -> Settings {
-        Settings::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"))
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
+        Settings::load(&root, &Default::default())
     }
 
     fn read_note(note: &str, text: &str) -> (Doc, Looks) {

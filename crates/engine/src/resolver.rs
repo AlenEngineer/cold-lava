@@ -443,6 +443,7 @@ mod tests {
         Index::build(
             crate::workspace::scan(
                 &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace"),
+                Default::default(),
             )
             .unwrap(),
         )
@@ -471,7 +472,9 @@ mod tests {
                 "outside.pdf",
             ],
         );
-        let ix = Index::build(crate::workspace::scan(&dir.join("workspace")).unwrap());
+        let ix = Index::build(
+            crate::workspace::scan(&dir.join("workspace"), Default::default()).unwrap(),
+        );
         let root = ix.workspace.root.clone();
         let trip = ix.by_rel("Notes/Trip");
         let found =
@@ -624,7 +627,7 @@ mod tests {
                 "Lava/Eruptions.csv",
             ],
         );
-        let ix = Index::build(crate::workspace::scan(&dir).unwrap());
+        let ix = Index::build(crate::workspace::scan(&dir, Default::default()).unwrap());
         assert_eq!(written_links_that_lead_elsewhere(&ix), Vec::<String>::new());
         let _ = std::fs::remove_dir_all(dir);
     }

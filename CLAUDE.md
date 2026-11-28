@@ -240,7 +240,7 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `style.rs`: the workspace's style (how its notes are written). The Markdown owner counts link
   syntax as it reads (`Read::written`); `count_with()` counts the rest of a note the first time
   the style is asked for (`Note::style`); `Workspace::style()` adds them up into a `Style`, the majority,
-  then Obsidian's settings, then `[style]` from config.toml (`style::set_configured`, from
+  then Obsidian's settings, then `[style]` from config.toml (`Configured::style`, from
   `config.rs`), then `.cold-lava/style.toml`. `cold-lava style` prints it. New text is spelled
   through it (`Style::link`, `tag`, `new_list`, `key_before`, `task_fields`; frontmatter's
   `new_key_at`): set-field, toggles, tag edits and merges ask it. Text already written keeps its
@@ -551,6 +551,11 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   `Core::run_recipe`; `rebind` returns what the placed shape becomes (`Binding::rebind`). The
   extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
   `Core::take_shape_answers`.
+- `configured.rs`: `Configured`, what a frontend configured for the workspaces it opens (the
+  flavour, `[style]`, the layers of types, attribute readings and shapes before a workspace's
+  own). Data only, handed to `Core::open` and `workspace::scan`; each part's reader takes it
+  (`markdown::flavour_for`, `Style::of`, `types::for_workspace`, `attributes::for_workspace`,
+  `shapes::for_workspace`).
 - `paths.rs`: the user's home and config folders.
 - `rel_path.rs`: a path as the workspace names it (relative to its root, `/` between
   folders). A leaf. The menu asks it; the engine's and the binary's other copies of the rule
@@ -588,8 +593,13 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   on one line, `headline` on a status line. Words as written, no terminal: `say`
   (`say::problem_lines`) and `Notice` show them.
 
-The engine never reads `config.toml`: `config.rs` in the binary parses it and hands the engine
-what it needs (`markdown::set_configured` for the chosen flavour).
+The engine never reads `config.toml`: `config.rs` in the binary parses it and builds the
+engine's `configured::Configured` (the flavour, `[style]`, and the extensions' and the file's
+types, attribute readings and shapes), handed to every `Core::open` and `workspace::scan` the app
+makes and to the commands that read a workspace without one (`edit::set_field`,
+`tasks::toggle_in`). A workspace keeps it (`Workspace::configured`, `Core::configured`) and its
+item settings and style are read with it, so two cores in one process read their own (#180).
+No engine setting is the process's.
 
 **The extension host** (`crates/host/src`, `cold-lava-host`; step 3 of `docs/extensions.md`).
 Every frontend runs extensions through it, so the permission check exists once. Don't write

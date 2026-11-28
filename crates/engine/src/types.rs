@@ -18,6 +18,7 @@ use indexmap::IndexMap;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::configured::Configured;
 use crate::daily;
 use crate::markdown::Syntax;
 pub use crate::origin::Origin;
@@ -737,26 +738,18 @@ pub struct Types {
     pub notes: Vec<String>,
 }
 
-static CONFIGURED: OnceLock<Vec<Layer>> = OnceLock::new();
-
-/// The layers every workspace gets before its own: extensions' types and config.toml's, which the
-/// frontend reads and sets once at startup.
-pub fn set_configured(layers: Vec<Layer>) {
-    let _ = CONFIGURED.set(layers);
-}
-
-/// The types a workspace's notes are read with: the built-in ones, the configured layers, then the
-/// workspace's own file.
-pub fn for_workspace(root: &Path) -> Types {
-    let configured = CONFIGURED.get().cloned().unwrap_or_default();
+/// The types a workspace's notes are read with: the built-in ones, the configured layers
+/// (extensions' types and config.toml's, as the frontend handed them in), then the workspace's
+/// own file.
+pub fn for_workspace(root: &Path, configured: &Configured) -> Types {
     let mut found = load(
         std::iter::once(Layer::built_in())
-            .chain(configured)
+            .chain(configured.types.iter().cloned())
             .chain(Layer::workspace(root)),
     );
     // A broken reading of an attribute is told where a broken type is: the types read through
     // those readings, and whoever lists the types' mistakes lists these.
-    let readings = crate::owner::markdown::attributes::for_workspace(root);
+    let readings = crate::owner::markdown::attributes::for_workspace(root, &configured.attributes);
     found.errors.extend(readings.errors);
     found
 }
