@@ -7,7 +7,7 @@
 //! leads back to it. The rules: `#heading` and `|alias` are split off first (`split_link`); a
 //! note by its workspace path, then by its name anywhere, the shallowest winning; other files
 //! by path, beside the linking note, then by name; `./` and `../` from the linking file. A link
-//! that leads nowhere creates its note where Obsidian would (`new_note_path`, checked by
+//! that leads nowhere creates its note where Obsidian would (`new_file_path`, checked by
 //! `files::new_note`).
 
 use crate::index::Index;
@@ -152,15 +152,9 @@ pub fn file(ix: &Index, target: &str, from: Option<usize>) -> Option<PathBuf> {
     Some(ix.workspace.root.join(&files.rels[i]))
 }
 
-/// Where a new note for an unresolved link goes, following Obsidian's
-/// "Default location for new notes" setting (`.obsidian/app.json`), unchecked: a frontend
-/// asks `files::new_note`, which refuses a path out of the workspace.
-pub(crate) fn new_note_path(ix: &Index, name: &str, from: Option<usize>) -> PathBuf {
-    new_file_path(ix, name.trim().trim_end_matches(".md"), "md", from)
-}
-
-/// Where a new `name.extension` goes: in the folder `name` names, else where Obsidian puts
-/// new files, as for notes.
+/// Where a new `name.extension` goes, unchecked: in the folder `name` names, else where
+/// Obsidian's "Default location for new notes" setting (`.obsidian/app.json`) puts new files.
+/// A frontend asks `files::new_file`, which refuses a path out of the workspace.
 pub(crate) fn new_file_path(
     ix: &Index,
     name: &str,
@@ -172,24 +166,48 @@ pub(crate) fn new_file_path(
     if name.contains('/') {
         return workspace.root.join(format!("{name}.{extension}"));
     }
-    let app: serde_json::Value = std::fs::read_to_string(workspace.root.join(".obsidian/app.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    let dir = match app.get("newFileLocation").and_then(|v| v.as_str()) {
-        Some("current") => from
+    let dir = match new_file_location(ix) {
+        Location::Current => from
             .and_then(|i| workspace.notes[i].path.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| workspace.root.clone()),
-        Some("folder") => {
-            let f = app
-                .get("newFileFolderPath")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            workspace.root.join(f.trim_matches('/'))
-        }
-        _ => workspace.root.clone(),
+        Location::Folder(f) => workspace.root.join(f),
+        Location::Root => workspace.root.clone(),
     };
     dir.join(format!("{name}.{extension}"))
+}
+
+/// Obsidian's folder for new files (`newFileFolderPath`), as written but for the slashes at
+/// either end, when `new_file_path` puts `name` there; empty for the root.
+pub(crate) fn new_file_folder(ix: &Index, name: &str) -> Option<String> {
+    if name.contains('/') {
+        return None;
+    }
+    match new_file_location(ix) {
+        Location::Folder(f) => Some(f),
+        _ => None,
+    }
+}
+
+enum Location {
+    Root,
+    Current,
+    Folder(String),
+}
+
+fn new_file_location(ix: &Index) -> Location {
+    let app: serde_json::Value =
+        std::fs::read_to_string(ix.workspace.root.join(".obsidian/app.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+    match app.get("newFileLocation").and_then(|v| v.as_str()) {
+        Some("current") => Location::Current,
+        Some("folder") => {
+            let f = app.get("newFileFolderPath").and_then(|v| v.as_str());
+            Location::Folder(f.unwrap_or("").trim_matches('/').to_string())
+        }
+        _ => Location::Root,
+    }
 }
 
 pub(crate) fn join(dir: &str, name: &str) -> String {

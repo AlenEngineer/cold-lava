@@ -1,0 +1,34 @@
+# The quick switcher's create says what it made by the note's own name, reads `\` as part of
+# the name, as the new-note prompt does, and says why when the note can't be made (#422).
+# tests/drive.rs checks the notes it made.
+env COLD_LAVA_EDITOR=none
+wait-for example-workspace 3
+keys p
+wait-for Go to note
+type Zqxjw
+wait-for Zqxjw▏
+wait-for 0 notes
+keys enter
+wait-for created Zqxjw.md
+wait-for Zqxjw  reading
+keys esc
+wait-gone reading · Esc / q back
+keys p
+wait-for Go to note
+type Zq\xjw
+wait-for Zq\xjw▏
+wait-for 0 notes
+keys enter
+wait-for created Zq\xjw.md
+wait-for Zq\xjw  reading
+keys esc
+wait-gone reading · Esc / q back
+keys p
+wait-for Go to note
+type Zqxjw.md/Inside
+wait-for Zqxjw.md/Inside▏
+wait-for 0 notes
+keys enter
+wait-for Zqxjw.md/Inside.md: Not a directory
+keys q
+exits 0
