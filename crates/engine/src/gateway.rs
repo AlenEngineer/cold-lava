@@ -768,29 +768,9 @@ pub(crate) struct Written {
 /// checked against the names the whole workspace holds (`anchor_names`), which only the core
 /// can read.
 pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Written, Error> {
-    let item = (workspace.notes.iter())
-        .flat_map(|n| workspace.items(n))
-        .find(|i| i.id == req.id)
-        .ok_or_else(|| {
-            let message = format!(
-                "no item {} now: it changed or is gone, read it again",
-                req.id
-            );
-            Error::new(Reason::Changed, message)
-        })?;
-    let note = item.note.clone();
-    let path = root.join(&note);
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| Error::new(Reason::Io, format!("{}: {e}", path.display())))?;
-    let settings = Settings::load(root);
-    let made = match req.op {
-        Op::Anchor => markdown::anchor(&note, &text, &settings, req, &anchor_names(workspace)),
-        _ => {
-            let style = crate::style::Lazy::new(|| workspace.style());
-            markdown::edit(&note, &text, &settings, &style, item, req, tasks::today())
-        }
-    }?;
+    let (note, text, made) = make(root, workspace, req, &Settings::load(root))?;
     if made.changed {
+        let path = root.join(&note);
         write::replace(&path, text.as_bytes(), made.text.as_bytes())
             .map_err(|e| Error::new(Reason::of(&e), e.named_from(root)))?;
     }
@@ -801,6 +781,38 @@ pub(crate) fn write(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Wr
         after: made.after,
         warning: made.warning,
     })
+}
+
+/// The edit `write` would make, nothing written: the note (workspace-relative, with `.md`), its
+/// text as read, and what its owner makes of it.
+fn make(
+    root: &Path,
+    workspace: &Workspace,
+    req: &Edit,
+    settings: &Settings,
+) -> Result<(String, String, markdown::Made), Error> {
+    let item = (workspace.notes.iter())
+        .flat_map(|n| workspace.items(n))
+        .find(|i| i.id == req.id)
+        .ok_or_else(|| {
+            let message = format!(
+                "no item {} now: it changed or is gone, read it again",
+                req.id
+            );
+            Error::new(Reason::Changed, message)
+        })?;
+    let note = &item.note;
+    let path = root.join(note);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| Error::new(Reason::Io, format!("{}: {e}", path.display())))?;
+    let made = match req.op {
+        Op::Anchor => markdown::anchor(note, &text, settings, req, &anchor_names(workspace)),
+        _ => {
+            let style = crate::style::Lazy::new(|| workspace.style());
+            markdown::edit(note, &text, settings, &style, item, req, tasks::today())
+        }
+    }?;
+    Ok((note.clone(), text, made))
 }
 
 /// Every anchor name the workspace holds (#190): each note's, as its Markdown owner reads them
@@ -845,6 +857,45 @@ pub(crate) fn read_back(workspace: &Workspace, w: Written) -> Result<Edited, Err
         next,
         warning: w.warning,
     })
+}
+
+/// What `write` and then `read_back` would answer, with nothing written: the item as the
+/// note's new text reads it.
+pub(crate) fn would(root: &Path, workspace: &Workspace, req: &Edit) -> Result<Edited, Error> {
+    let settings = Settings::load(root);
+    let (note, _, made) = make(root, workspace, req, &settings)?;
+    let items = crate::items::extract(&note, &made.text, &settings);
+    let line_of = |at: usize| made.text.lines().nth(at - 1).unwrap_or_default();
+    let shown = |item: &Item| answer_line(&settings, line_of(item.line), item).into_owned();
+    let task_at = |at: usize| (items.iter()).find(|i| i.line == at && i.data.answers_to("task"));
+    let (item, next) = match made.after {
+        After::Set(item) => (shown(&item), None),
+        After::Toggled { line, next } => {
+            let item = task_at(line).ok_or_else(|| {
+                let message = format!("a tick would leave line {line} of {note} no task");
+                Error::new(Reason::ReadBack, message)
+            })?;
+            (shown(item), next.and_then(task_at).map(shown))
+        }
+    };
+    Ok(Edited {
+        item,
+        changed: made.changed,
+        next,
+        warning: made.warning,
+    })
+}
+
+/// The item `id` of the file at workspace-relative `rel` (with its extension), as `query`
+/// hands it out.
+pub(crate) fn item(workspace: &Workspace, rel: &str, id: &str) -> Option<Item> {
+    match file(workspace, rel)? {
+        File::Note(note) => {
+            let item = workspace.items(note).iter().find(|i| i.id == id)?;
+            Some(answer(workspace, note, item).into_owned())
+        }
+        File::Owned(f) => f.items.iter().find(|i| i.id == id).cloned(),
+    }
 }
 
 #[cfg(test)]
@@ -1238,6 +1289,34 @@ fields.text = { rest = true }
             subscription: ideas,
         };
         assert_eq!(core.take_item_news(), [("ideas".to_string(), reset)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dry run answers what the edit would, item and all, and writes and tells nothing; a
+    /// tick tried so says the task and its next occurrence.
+    #[test]
+    fn an_edit_tried_writes_nothing_and_answers_as_the_edit() {
+        let dir = workspace("would");
+        let mut core = Core::open(&dir).unwrap();
+        let before = std::fs::read_to_string(dir.join("Plan.md")).unwrap();
+        let rent = task(&core, "Pay rent");
+        assert_eq!(core.item("Plan.md", &rent.id), Some(rent.clone()));
+        assert_eq!(core.item("Plan.md", "nope"), None);
+        let edit = set(&rent, "due", json!("2026-12-01"));
+        let tried = core.would_edit(&edit).unwrap();
+        let plants = task(&core, "Water plants");
+        let ticked = core.would_edit(&tick(&plants)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Plan.md")).unwrap(),
+            before
+        );
+        assert_eq!(core.poll(), [], "nothing written, nothing to hear");
+        assert!(ticked.next.is_some(), "a recurring task's next occurrence");
+
+        let made = now(core.edit_item("table", &edit)).unwrap();
+        assert_eq!(tried, made);
+        let stale = core.would_edit(&edit).unwrap_err();
+        assert_eq!(stale.reason, Reason::Changed, "{stale}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

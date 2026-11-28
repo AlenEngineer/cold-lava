@@ -166,6 +166,18 @@ impl StatusType {
         }
     }
 
+    /// The status type whose `name` is `name`.
+    pub fn named(name: &str) -> Option<StatusType> {
+        let all = [
+            StatusType::Todo,
+            StatusType::InProgress,
+            StatusType::Done,
+            StatusType::Cancelled,
+            StatusType::NonTask,
+        ];
+        all.into_iter().find(|t| t.name() == name)
+    }
+
     /// The name `agenda --json` and `task toggle --json` have always used.
     pub fn agenda_name(self) -> &'static str {
         match self {

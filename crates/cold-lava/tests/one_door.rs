@@ -628,7 +628,7 @@ fn the_scan_reads_on_after_a_test_module() {
 ///   task and what a rename, a merge, a recipe or a delete would change, all from the index.
 /// - `main.rs`: `cold-lava rename` and `recipe` plan on the core's index, and `graph` asks it
 ///   whether there are notes.
-/// - `owned.rs`: the command line's workspace with its owned files, and `item set`'s item.
+/// - `owned.rs`: the command line's index, taken from the core that opened the workspace.
 /// - The host's `host.rs`: `Host` answers `types/list` and `workspace/style` from it.
 #[test]
 fn the_index_is_still_read_outside_the_core_here() {
@@ -645,21 +645,14 @@ fn the_index_is_still_read_outside_the_core_here() {
 }
 
 /// A workspace is opened once, as a `Core`, so every command sees the same files, the owned
-/// ones too. Where the app still scans one itself or builds an index of its own (#270, B3):
-///
-/// - `main.rs`: `tidy` and `search` scan and build an index; `style` scans.
-/// - `owned.rs`: the command line's workspace when no extension owns a kind of file.
+/// ones too: the app scans none itself and builds no index of its own (#270, B3).
 ///
 /// A type of the engine's `index` module that a function takes (`index::Backlink`) is not
 /// counted: it is data the core gave. `Index::build` reached through another name for the
 /// type (`use crate::index::Index as I`) is not seen.
 #[test]
-fn a_workspace_is_still_opened_beside_the_core_here() {
-    let left = [
-        "main.rs: Index::build( ×2",
-        "main.rs: workspace::scan( ×3",
-        "owned.rs: workspace::scan( ×1",
-    ];
+fn a_workspace_is_opened_only_as_a_core() {
+    let left: [&str; 0] = [];
     only_listed(
         "a workspace opened beside the core",
         THROUGH_THE_CORE,
@@ -759,8 +752,6 @@ fn item_edits(code: &str) -> Vec<String> {
 /// extension), which asks the file's owner and tells subscribers. What still makes an
 /// item's or a tag's new text itself, or writes it:
 ///
-/// - `edit::set_field`: `cold-lava item set` on a note (#270, B3).
-/// - `tasks::toggle_in`: `cold-lava task toggle` (#270, B3).
 /// - `frontmatter::edit_tag`: the menu's tag edit, which reads the note and writes it over the
 ///   text read (`Seen::replace_through_link`, as its tree lists a note that is a link) itself.
 ///
@@ -770,11 +761,7 @@ fn item_edits(code: &str) -> Vec<String> {
 #[test]
 fn items_are_still_edited_around_the_core_here() {
     let found = tally(per_file(&sources(), item_edits));
-    let left = [
-        "home.rs: frontmatter::edit_tag ×1",
-        "main.rs: edit::set_field ×1",
-        "main.rs: tasks::toggle_in ×1",
-    ];
+    let left = ["home.rs: frontmatter::edit_tag ×1"];
     only_listed(
         "item edits around Core::edit_item",
         THROUGH_THE_CORE,

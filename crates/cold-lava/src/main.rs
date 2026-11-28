@@ -642,7 +642,7 @@ fn run() -> Result<()> {
         }
         Some("tidy") => {
             let root = PathBuf::from(args.word(1).unwrap_or("."));
-            let ix = index::Index::build(workspace::scan(&root)?);
+            let ix = owned::index_with_owned(&root, &registry)?;
             let report = tidy::report(&ix);
             if json {
                 say::json(&report)?;
@@ -663,7 +663,7 @@ fn run() -> Result<()> {
                     .map_err(|_| anyhow::anyhow!("--limit needs a number"))?,
                 None => 5,
             };
-            let ix = index::Index::build(workspace::scan(&root)?);
+            let ix = owned::index(&root, &registry)?;
             let hits = search::search(&ix, &query, limit);
             if json {
                 say::json(&search::to_json(&ix, &hits))?;
@@ -763,7 +763,7 @@ fn run() -> Result<()> {
         }
         Some("style") => {
             let root = PathBuf::from(args.word(1).unwrap_or("."));
-            let found = workspace::scan(&root)?.style();
+            let found = owned::index(&root, &registry)?.workspace.style();
             if json {
                 say::json(&found)?;
             } else {
@@ -805,23 +805,8 @@ fn run() -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("usage: cold-lava task toggle FILE:LINE"))?;
             let (file, line) = tasks::locate(spec)?;
             let (root, found) = locate_note_workspace(&file);
-            let rel = file.canonicalize().unwrap_or(file.clone());
-            let rel = rel.strip_prefix(&root).unwrap_or(&rel).to_string_lossy();
-            if let Some(owner) = owned::owner_of(&registry, &rel.replace('\\', "/")) {
-                anyhow::bail!(
-                    "{} is read by {owner}, not as a note, so a line doesn't name a task in it: \
-                     tick it with `cold-lava item set FILE ID status x` (ids from `cold-lava \
-                     items WORKSPACE task --json`)",
-                    file.display()
-                );
-            }
-            let result = tasks::toggle_in(
-                &root,
-                &file,
-                line,
-                args.values.get("id").map(String::as_str),
-                tasks::today(),
-            );
+            let rev = args.values.get("id").map(String::as_str);
+            let result = owned::toggle(&root, &mut registry, &file, line, rev);
             match (result, json) {
                 (Ok(r), true) => say::json(&r)?,
                 (Ok(r), false) => {
@@ -871,29 +856,12 @@ fn run() -> Result<()> {
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            let req = edit::SetField {
-                id,
-                rev: args.values.get("rev").map(String::as_str),
-                field,
-                value,
-            };
+            let rev = args.values.get("rev").map(String::as_str);
+            let field = field.to_string();
+            let op = gateway::Op::SetField { field, value };
             let dry = args.has("dry-run");
-            let result = match owned::owner_of(&registry, &note) {
-                Some(owner) if dry => Err(edit::EditError::Refused(format!(
-                    "--dry-run: {note} is read by {owner}, which writes it only for a real edit"
-                ))),
-                Some(_) => {
-                    let (rev, value) = (req.rev, req.value.clone());
-                    owned::set_field(&root, &mut registry, &note, id, rev, field, value)
-                        .map(|e| edit::Set {
-                            text: String::new(),
-                            changed: e.changed,
-                            item: e.item,
-                        })
-                        .map_err(edit::EditError::from)
-                }
-                None => edit::set_field(&root, &note, &req, dry),
-            };
+            let result = owned::edit(&root, &mut registry, &note, id, rev, op, dry)
+                .map_err(edit::EditError::from);
             match (result, json) {
                 (Ok(set), true) => {
                     let out = serde_json::json!({

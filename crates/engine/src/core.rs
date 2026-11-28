@@ -487,6 +487,34 @@ impl Core {
         Ok(Answer::Now(Box::new(edited)))
     }
 
+    /// What `edit_item` would answer, with nothing written (`item set --dry-run`). Refused in
+    /// a file another owner reads, whose owner writes it only for a real edit.
+    pub fn would_edit(&self, edit: &Edit) -> Result<Edited, gateway::Error> {
+        let owned = &self.index.workspace.owned;
+        if let Some(f) = owned.iter().find(|f| f.places.contains_key(&edit.id)) {
+            let (rel, owner) = (&f.rel, &f.owner);
+            let message = format!("{rel} is read by {owner}, which writes it only for a real edit");
+            return Err(gateway::Error::new(Reason::Refused, message));
+        }
+        gateway::would(self.root(), &self.index.workspace, edit)
+    }
+
+    /// The item `id` of the file at workspace-relative `rel` (with its extension), as
+    /// `items/query` hands it out.
+    pub fn item(&self, rel: &str, id: &str) -> Option<Item> {
+        gateway::item(&self.index.workspace, rel, id)
+    }
+
+    /// Who reads the file at workspace-relative `rel` (with its extension) when it isn't a
+    /// note: the engine's own owner or an extension, by its name.
+    pub fn owner_of(&self, rel: &str) -> Option<&str> {
+        let owned = &self.index.workspace.owned;
+        owned
+            .iter()
+            .find(|f| f.rel == rel)
+            .map(|f| f.owner.as_str())
+    }
+
     /// `items/edit` on the item `edit.id` of the owned file `owned[i]`: the change is made to
     /// what its owner gave (a Markdown piece's text through the Markdown owner, a typed item's
     /// field as asked), and the owner is asked for the file's new text (`file/edit`). Refused at

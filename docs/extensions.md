@@ -1039,13 +1039,14 @@ style.minutes = { badge = true, icon = "⏱" }
 
 ### Writing, as built
 
-- **One call.** `edit::set_field(root, note, SetField { id, rev, field, value }, dry_run)` reads
-  the note, `edit::plan` makes the edit in memory, and `write::replace` writes it, refused if the
-  file changed since it was read. The CLI is `cold-lava item set FILE ID FIELD VALUE` (or
-  `--remove`), with `--rev`, `--dry-run` and `--json`, beside `task toggle FILE:LINE`: both
-  name one item in one note, and `items` stays a read. `items/edit set-field` calls the same
-  function. `Set` carries the new text, the item as it reads back, and `changed` (false when the
-  note already said this; nothing is written then).
+- **One call.** `items/edit set-field` reads the note, `edit::plan` makes the edit in memory,
+  and `write::replace` writes it, refused if the file changed since it was read. The CLI is
+  `cold-lava item set FILE ID FIELD VALUE` (or `--remove`), with `--rev`, `--dry-run` and
+  `--json`, beside `task toggle FILE:LINE`: both name one item in one file, and `items` stays a
+  read. Both are `items/edit` through the core (`owned::edit` and `owned::toggle`, over
+  `Core::edit_item`), as the agenda's edit is, whoever owns the file; a dry run is
+  `Core::would_edit`, which writes nothing. The answer carries the item as it reads back and
+  `changed` (false when the note already said this; nothing is written then).
 - **Finding the item.** By id in the note as it is now; gone, or a `rev` that differs, is
   `Changed` (exit code 3, like a stale `task toggle`); a text kept beside the note while it
   was written is `Kept` (exit code 4, `"kept": true` with `--json`). Only typed items, which
@@ -2564,7 +2565,7 @@ the owner machinery above: `Workspace::owned`, `items/query` and `items/subscrib
   Enter opening the whiteboard and Back, a rename rewriting the card and the sticky, and the
   graph's edge; `tests/drive.rs` reads the canvases after. `core.rs` tests a refused edit.
 - **The command line.** `cold-lava item set FILE ID FIELD VALUE` on a canvas (or on any file
-  an owner reads) takes the agenda's path, `Core::edit_item` through `owned::set_field`: the
+  an owner reads) takes the agenda's path, `Core::edit_item` through `owned::edit`: the
   owner writes the node's text, it is read back before it is written, and a stale `--rev` or a
   file changed since it was read is refused with exit code 3. An extension owner is started to
   answer, and a file its owner hasn't read as it is now is refused, naming the owner.
