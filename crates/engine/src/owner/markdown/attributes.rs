@@ -32,7 +32,7 @@ pub const BUILT_IN: &str = include_str!("../../../markdown/attributes.toml");
 /// attribute's name: `"*" = { inline = "*" }` reads `rating` from `[rating:: 5]`.
 pub const ANY: &str = "*";
 
-/// The attributes `tasks::toggle` writes or moves itself, with the Tasks plugin's markers in
+/// The attributes `tasks::toggle_text` writes or moves itself, with the Tasks plugin's markers in
 /// its own code: a tick's done and cancelled dates, a recurring task's next dates. Reading
 /// and `set-field` follow the table; ticking doesn't yet.
 pub const TICKED: &[&str] = &["due", "scheduled", "start", "done", "cancelled"];

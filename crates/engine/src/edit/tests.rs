@@ -1,9 +1,11 @@
 use super::*;
 use crate::items::extract;
 use crate::markdown::Flavour;
+use crate::style::Style;
 use crate::tasks_settings::TasksSettings;
 use crate::types::{Layer, load};
 use serde_json::json;
+use std::path::Path;
 
 fn settings(toml: &str) -> Settings {
     let table: toml::Table = toml::from_str(toml).unwrap();
@@ -709,23 +711,11 @@ fn the_same_value_changes_nothing() {
     assert_eq!(same.text, "- Sweep 📅 2026-11-12");
 }
 
+/// A plan is made against the rev it was asked for: once the row reads otherwise, the same
+/// request is refused.
 #[test]
-fn set_field_writes_only_when_the_file_is_as_read() {
-    let dir = std::env::temp_dir().join(format!("cold-lava-edit-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join(".cold-lava")).unwrap();
-    std::fs::write(
-        dir.join(".cold-lava/types.toml"),
-        format!(
-            "version = 1\n[types.{}",
-            ERUPTION.trim_start().trim_start_matches('[')
-        )
-        .replace("[[eruption.from]]", "[[types.eruption.from]]"),
-    )
-    .unwrap();
-    std::fs::write(dir.join("VEI.md"), TABLE).unwrap();
-    let s = Settings::load(&dir, &Default::default());
-    assert!(s.types.errors.is_empty(), "{:?}", s.types.errors);
+fn a_plan_is_refused_once_the_item_changed() {
+    let s = settings(ERUPTION);
     let row = extract("VEI.md", TABLE, &s)[1].clone();
     let req = SetField {
         id: &row.id,
@@ -733,20 +723,16 @@ fn set_field_writes_only_when_the_file_is_as_read() {
         field: "example",
         value: json!("Pinatubo"),
     };
-    let dry = set_field(&dir, &Default::default(), "VEI.md", &req, true).unwrap();
-    assert!(dry.changed);
-    assert_eq!(std::fs::read_to_string(dir.join("VEI.md")).unwrap(), TABLE);
-    set_field(&dir, &Default::default(), "VEI.md", &req, false).unwrap();
-    let now = std::fs::read_to_string(dir.join("VEI.md")).unwrap();
-    assert_eq!(now, dry.text);
+    let style = style_of(&s).into();
+    let made = plan("VEI.md", TABLE, &s, &style, &req).unwrap();
+    assert!(made.changed);
     assert!(
         matches!(
-            set_field(&dir, &Default::default(), "VEI.md", &req, false),
+            plan("VEI.md", &made.text, &s, &style, &req),
             Err(Changed(_))
         ),
         "the row's rev is stale now"
     );
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// A field read from an attribute is written where the file's owner read it: a checkbox's
