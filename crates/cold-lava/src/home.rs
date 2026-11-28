@@ -3942,12 +3942,6 @@ impl Home {
             self.select_path(&first.to_path);
         }
         let links = plan.links();
-        let moved_own = plan
-            .edits
-            .iter()
-            .filter(|e| plan.moved(&e.path) != e.path)
-            .count();
-        let files = plan.files() - moved_own;
         let (verb, to) = match plan.moves.as_slice() {
             [m] => {
                 let moved = dir_of_rel(&m.from) != dir_of_rel(&m.to);
@@ -3970,7 +3964,7 @@ impl Home {
             format!(
                 "{verb} to {to} · {} updated in {}",
                 plural(links, "link"),
-                plural(files.max(1), "file")
+                plural(plan.files(), "file")
             )
         };
         self.flash(msg);
