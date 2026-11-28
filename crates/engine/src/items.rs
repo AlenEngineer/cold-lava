@@ -45,18 +45,26 @@ pub struct Settings {
 impl Settings {
     /// The workspace's settings, with what the frontend `configured`.
     pub fn load(root: &Path, configured: &Configured) -> Settings {
-        Settings::load_with(root, configured, types::for_workspace(root, configured))
+        let types = types::for_workspace(root, configured);
+        let (flavour, readings) = (configured.flavour.as_ref(), &configured.attributes);
+        Settings::load_with(root, flavour, readings, types)
     }
 
-    /// The workspace's settings, with these types.
-    pub fn load_with(root: &Path, configured: &Configured, types: Types) -> Settings {
+    /// The workspace's settings, with these types, the configured flavour (`None`: the
+    /// workspace's own) and the configured attribute readings before the workspace's.
+    pub fn load_with(
+        root: &Path,
+        flavour: Option<&Flavour>,
+        readings: &[attributes::Layer],
+        types: Types,
+    ) -> Settings {
         Settings::with(
-            markdown::flavour_for(root, configured.flavour.as_ref()),
+            markdown::flavour_for(root, flavour),
             TasksSettings::load(root),
             daily::Settings::load(root),
             templates::Settings::load(root),
             types,
-            attributes::for_workspace(root, &configured.attributes),
+            attributes::for_workspace(root, readings),
         )
     }
 
@@ -2229,7 +2237,7 @@ fields.what = { rest = true }
                 false => types::Layer::built_in(),
             };
             let layers = std::iter::once(built_in).chain(types::Layer::workspace(&workspace));
-            Settings::load_with(&workspace, &Configured::default(), types::load(layers))
+            Settings::load_with(&workspace, None, &[], types::load(layers))
         };
         let (now, then) = (of_workspace(false), of_workspace(true));
         assert!(now.matcher.names().any(|n| n == "volcano"));
@@ -2432,7 +2440,7 @@ fields.what = { rest = true }
         let root = Path::new(&dir);
         let none = Configured::default();
         let typed = Settings::load(root, &none);
-        let plain = Settings::load_with(root, &none, types::load(Vec::<types::Layer>::new()));
+        let plain = Settings::load_with(root, None, &[], types::load(Vec::<types::Layer>::new()));
         let notes: Vec<(String, String)> = walkdir::WalkDir::new(root)
             .into_iter()
             .flatten()

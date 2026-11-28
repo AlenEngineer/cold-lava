@@ -89,6 +89,8 @@ fn commonmark() -> String {
 pub const STYLE: &str = "style";
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
+/// The app's one reading of config.toml for the engine, handed to each core it opens and each
+/// folder it scans; code that holds a `Core` asks the core (`Core::configured`) instead.
 static CONFIGURED: OnceLock<Arc<Configured>> = OnceLock::new();
 
 pub fn path() -> Option<PathBuf> {

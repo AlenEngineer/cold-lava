@@ -684,7 +684,8 @@ pub struct Home {
     /// `Some` while the pane shows the reader: always without an editor, else after
     /// `note.read`.
     reader: Option<Reader>,
-    /// The open workspace's Markdown flavour.
+    /// The open workspace's Markdown flavour, for reading a note while no core is open; with
+    /// one, the reader takes the core's (`items::Settings::flavour`).
     flavour: Flavour,
     zoom: bool,
     // UI
@@ -1734,10 +1735,12 @@ impl Home {
             return Ok(());
         };
         self.close_board();
-        if self.core.is_none() {
-            self.core = Some(Core::open(&root, crate::config::configured())?);
-        }
-        match board::Board::open(&root, path, node) {
+        let core = match self.core.take() {
+            Some(core) => core,
+            None => Core::open(&root, crate::config::configured())?,
+        };
+        let configured = self.core.insert(core).configured().clone();
+        match board::Board::open(&root, &configured, path, node) {
             Ok(b) => {
                 self.board = Some(b);
                 self.mode = Mode::Board;
@@ -2352,7 +2355,7 @@ impl Home {
                 &read
             }
         };
-        looks::read(&text, &self.flavour, items, &settings.types)
+        looks::read(&text, &settings.flavour, items, &settings.types)
     }
 
     /// Read the shown note again, keeping the reader's place.
