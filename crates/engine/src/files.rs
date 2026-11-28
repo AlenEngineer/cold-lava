@@ -347,9 +347,10 @@ fn free_name(index: &Index, name: &str, extension: &str) -> Result<NewPath, Erro
             0 => name.to_string(),
             n => format!("{name} {n}"),
         };
-        let new = new_file(index, &candidate, extension, None)?;
-        if !write::taken(new.path()) {
-            return Ok(new);
+        let rel = new_file_rel(index, &candidate, extension, None)?;
+        // Something at the candidate itself, a link included, only takes the number.
+        if !write::taken(&new_entry(&index.workspace.root, &rel)?) {
+            return new_path(&index.workspace.root, &rel);
         }
         n += 1;
     }
@@ -477,6 +478,13 @@ pub fn new_path(root: &Path, rel: &str) -> Result<NewPath, Error> {
     Ok(NewPath { rel, path })
 }
 
+/// `new_path`'s checks but the last: the entry at `rel` itself may be a symlink.
+fn new_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
+    let rel = normal(rel)?;
+    crate::rename::check_path(&rel).map_err(|e| Error::new(Reason::Refused, e.to_string()))?;
+    resolve_entry(root, &rel)
+}
+
 /// Where a new note named `name` goes, as a `NewPath` (`new_file`).
 pub fn new_note(index: &Index, name: &str, from: Option<usize>) -> Result<NewPath, Error> {
     new_file(index, name.trim().trim_end_matches(".md"), "md", from)
@@ -492,6 +500,17 @@ pub fn new_file(
     extension: &str,
     from: Option<usize>,
 ) -> Result<NewPath, Error> {
+    let rel = new_file_rel(index, name, extension, from)?;
+    new_path(&index.workspace.root, &rel)
+}
+
+/// `new_file`'s path, relative to the workspace, before `new_path` checks it.
+fn new_file_rel(
+    index: &Index,
+    name: &str,
+    extension: &str,
+    from: Option<usize>,
+) -> Result<String, Error> {
     let root = &index.workspace.root;
     if let Some(folder) = crate::resolver::new_file_folder(index, name)
         && !folder.is_empty()
@@ -511,7 +530,7 @@ pub fn new_file(
         }
         _ => rel_path::or_whole(root, &path),
     };
-    new_path(root, &rel)
+    Ok(rel)
 }
 
 /// How many deletes of one client the core keeps tokens for.
