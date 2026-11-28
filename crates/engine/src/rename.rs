@@ -312,6 +312,7 @@ pub fn plan_into(ix: &Index, items: &[String], folder: &str) -> Result<Plan> {
     let mut moves = Vec::new();
     for rel in items {
         let rel = rel.trim_matches('/');
+        check_path(rel)?;
         let from_path = root.join(rel);
         let is_dir = from_path.is_dir();
         if is_dir {
@@ -353,6 +354,7 @@ fn check_folder(ix: &Index, from: &str) -> Result<()> {
     if from.split('/').any(|c| c.starts_with('.')) {
         bail!("{from} is a hidden folder; cold-lava leaves it alone");
     }
+    check_path(from)?;
     if !ix.workspace.root.join(from).is_dir() {
         bail!("there's no folder {from}");
     }
@@ -1536,14 +1538,17 @@ mod tests {
     /// #452: the plan checks what moves as it checks where it lands (`check_path`), so no
     /// caller has to. A source outside the workspace, in a hidden folder, or in a spelling
     /// other than its own (`Notes//Lava.md` would move `Notes/Lava.md` and leave the links
-    /// to it unrewritten) is refused, and nothing is looked up at it.
+    /// to it unrewritten) is refused, and nothing is looked up at it. A folder's move
+    /// (`plan_folder`) checks its source the same way.
     #[test]
     fn a_source_that_is_not_a_workspace_path_is_refused() {
-        let files = [("Notes/Lava.md", "hot"), (".hidden/Ash.md", "fine")];
-        let (dir, ix) = workspace_with(
-            "from-path",
-            &[("Rocky.md", "[[Notes/Lava]]\n"), files[0], files[1]],
-        );
+        let files = [
+            ("Rocky.md", "[[Notes/Lava]]\n"),
+            ("Notes/Lava.md", "hot"),
+            ("Notes/Sub/Pumice.md", "light"),
+            (".hidden/Ash.md", "fine"),
+        ];
+        let (dir, ix) = workspace_with("from-path", &files);
         let outside = dir.with_extension("outside.md");
         std::fs::write(&outside, "far").unwrap();
         let outside_rel = format!("../{}", outside.file_name().unwrap().to_str().unwrap());
@@ -1559,6 +1564,12 @@ mod tests {
                 format!("not a valid path inside the workspace: {from}")
             );
         }
+        assert_eq!(
+            plan_folder(&ix, "Notes//Sub", "Archive")
+                .unwrap_err()
+                .to_string(),
+            "not a valid path inside the workspace: Notes//Sub"
+        );
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&outside);
     }
