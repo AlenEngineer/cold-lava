@@ -668,7 +668,9 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   program, backlinks, switcher, search). It applies the extensions' `Effect`s. It deletes,
   restores and makes folders by asking the core as `MENU` (`Core::delete_file`,
   `restore_file`, `create_folder`), never `trash::delete`, `trash::restore` or
-  `write::create_dir`, and doesn't rescan afterwards (`after_core_change`): the core read
+  `write::create_dir`, and makes new notes through `Core::create_file` (the new-note
+  prompt, the switcher's create, a link followed to nowhere, tidy's create, `note.edit`),
+  never `write::create`. It doesn't rescan afterwards (`after_core_change`): the core read
   what moved. `tests/one_door.rs` reads every file under `src/` and lists the engine
   writes, the whole-workspace operations and the `std::fs` changes the app still makes
   itself (#193), and what else still goes around the door (#270): reads of `core.index` (the
