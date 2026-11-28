@@ -286,8 +286,7 @@ impl Core {
             let news = self.items.reset(&self.index.workspace);
             self.tell(news);
         }
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
     }
 
     /// `file/read` requests for the owners, each with its owner's name: files whose version
@@ -360,8 +359,7 @@ impl Core {
             }
             _ => self.owned_changed(&[path.to_string()]),
         };
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
     }
 
     /// Owned files at `rels` may have changed on disk: read them again, and tell subscribers.
@@ -379,6 +377,13 @@ impl Core {
         }
         events.extend(changed.into_iter().map(Event::OwnedChanged));
         events
+    }
+
+    /// Tell subscribers of the core's own change, and keep its events for the next `poll`.
+    /// `note_changed_now` hands its events to its caller instead, and `poll` returns its own.
+    fn announce(&mut self, events: Vec<Event>) {
+        self.broadcast(&events);
+        self.unseen.extend(events);
     }
 
     fn broadcast(&mut self, events: &[Event]) {
@@ -480,8 +485,7 @@ impl Core {
                 by: by.to_string(),
                 what: written.what.clone(),
             });
-            self.broadcast(&events);
-            self.unseen.extend(events);
+            self.announce(events);
         }
         let edited = gateway::read_back(&self.index.workspace, written)?;
         Ok(Answer::Now(Box::new(edited)))
@@ -629,8 +633,7 @@ impl Core {
         let file = (self.index.workspace.owned.iter()).find(|f| f.rel == path);
         let items: &[Item] = file.map(|f| f.items.as_slice()).unwrap_or_default();
         self.edits.wrote(w, written.map(|()| items));
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
     }
 
     /// The answer of the extension named `by` to `ask` (`shape/region`, `shape/gesture`). Only
@@ -704,8 +707,7 @@ impl Core {
             path: rel.to_string(),
             by: by.to_string(),
         });
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
         let went = trashed.went;
         let trashed = self.trashed.keep(by, trashed);
         Ok(files::Deleted { trashed, went })
@@ -732,8 +734,7 @@ impl Core {
             path: restored.path.clone(),
             by: by.to_string(),
         });
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
         Ok(restored)
     }
 
@@ -754,12 +755,10 @@ impl Core {
     /// reads; `FolderCreated` comes from the next `poll`.
     pub fn create_folder(&mut self, by: &str, rel: &str) -> Result<files::Folder, gateway::Error> {
         let made = files::create_folder(self.root(), rel)?;
-        let events = [Event::FolderCreated {
+        self.announce(vec![Event::FolderCreated {
             path: made.path.clone(),
             by: by.to_string(),
-        }];
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        }]);
         Ok(made)
     }
 
@@ -846,8 +845,7 @@ impl Core {
         let owned = plan.edits.iter().filter(|e| e.owned.is_some());
         let owned: Vec<String> = owned.map(|e| e.file.clone()).collect();
         events.extend(self.owned_changed(&owned));
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
         Ok(applied.title)
     }
 
@@ -860,8 +858,7 @@ impl Core {
     fn reread_note(&mut self, rel: &str) {
         if workspace::is_note_path(Path::new(rel)) {
             let events = self.refresh(&[self.root().join(rel)]);
-            self.broadcast(&events);
-            self.unseen.extend(events);
+            self.announce(events);
         }
     }
 
@@ -883,9 +880,8 @@ impl Core {
     pub fn rescan_now(&mut self) {
         if let Ok(v) = workspace::scan(&self.index.workspace.root) {
             let reports = self.rescanned(v);
-            self.broadcast(&reports);
+            self.announce(reports);
             self.broadcast(&[Event::Rescanned]);
-            self.unseen.extend(reports);
         }
     }
 

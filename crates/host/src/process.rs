@@ -91,6 +91,44 @@ enum Asked {
     Shape(Box<Ask>),
 }
 
+impl Asked {
+    fn method(&self) -> &'static str {
+        match self {
+            Asked::Initialize => "initialize",
+            Asked::Command(_) => "command/run",
+            Asked::Read { .. } => "file/read",
+            Asked::Edit { .. } => "file/edit",
+            Asked::Preview { .. } => "file/preview",
+            Asked::Shape(ask) => ask.method(),
+        }
+    }
+
+    /// Hand whoever waits on this request its answer: what the extension answered, or why
+    /// there is none. Nobody waits on `initialize` or `command/run`: what their failure means
+    /// is the caller's to say.
+    fn answer(self, host: &mut Host<'_>, outcome: Result<Value, String>) {
+        let method = self.method();
+        match self {
+            Asked::Initialize | Asked::Command(_) => {}
+            Asked::Read { path, rev } => host.file_given(&path, &rev, read(method, outcome)),
+            Asked::Edit { path, rev } => {
+                let text = read::<NewText>(method, outcome).map(|t| t.text.into_string());
+                host.file_edited(&path, &rev, text);
+            }
+            Asked::Preview { path, rev } => host.file_previewed(&path, &rev, read(method, outcome)),
+            Asked::Shape(ask) => host.shape_answered(&ask, read(method, outcome)),
+        }
+    }
+}
+
+/// An answer to `method` read as what it answers with.
+fn read<T: serde::de::DeserializeOwned>(
+    method: &str,
+    outcome: Result<Value, String>,
+) -> Result<T, String> {
+    outcome.and_then(|v| serde_json::from_value(v).map_err(|e| unread(method, &e)))
+}
+
 impl Process {
     pub fn new(installed: Installed) -> Option<Process> {
         let connector = transport::connector(&installed.launch.transport)?;
@@ -133,17 +171,19 @@ impl Process {
             subscriptions: Vec::new(),
             later: HashMap::new(),
         });
-        self.ask(Asked::Initialize, "initialize", params, host);
+        self.ask(Asked::Initialize, params, host);
     }
 
     /// Send one request, remembering what it asked.
-    fn ask(&mut self, asked: Asked, method: &str, params: Value, host: &mut Host<'_>) {
+    fn ask(&mut self, asked: Asked, params: Value, host: &mut Host<'_>) {
         let State::Live(live) = &mut self.state else {
             return;
         };
         let id = live.next_id;
         live.next_id += 1;
-        let sent = live.transport.send(rpc::request(id, method, params));
+        let sent = live
+            .transport
+            .send(rpc::request(id, asked.method(), params));
         live.waiting.insert(id, (asked, Instant::now()));
         if let Err(e) = sent {
             self.fail(host, e.to_string());
@@ -169,18 +209,7 @@ impl Process {
             let _ = host.unsubscribe_items(sub);
         }
         for (asked, _) in live.waiting.into_values() {
-            match asked {
-                Asked::Read { path, rev } => {
-                    host.file_given(&path, &rev, Err(format!("it stopped: {why}")))
-                }
-                Asked::Edit { path, rev } => {
-                    host.file_edited(&path, &rev, Err(format!("it stopped: {why}")))
-                }
-                Asked::Preview { path, rev } => {
-                    host.file_previewed(&path, &rev, Err(format!("it stopped: {why}")))
-                }
-                _ => {}
-            }
+            asked.answer(host, Err(format!("it stopped: {why}")));
         }
         let last = (self.launch.log.as_ref())
             .and_then(|log| std::fs::read_to_string(log).ok())
@@ -211,33 +240,7 @@ impl Process {
             (Asked::Command(_), Err(e)) => {
                 host.notify(format!("{}: {}", self.manifest.name, e.message))
             }
-            (Asked::Read { path, rev }, outcome) => {
-                let given = outcome
-                    .map_err(|e| e.message)
-                    .and_then(|v| serde_json::from_value(v).map_err(|e| unread("file/read", &e)));
-                host.file_given(&path, &rev, given);
-            }
-            (Asked::Edit { path, rev }, outcome) => {
-                let text = outcome.map_err(|e| e.message).and_then(|v| {
-                    serde_json::from_value::<NewText>(v)
-                        .map(|t| t.text.into_string())
-                        .map_err(|e| unread("file/edit", &e))
-                });
-                host.file_edited(&path, &rev, text);
-            }
-            (Asked::Preview { path, rev }, outcome) => {
-                let content = outcome.map_err(|e| e.message).and_then(|v| {
-                    serde_json::from_value(v).map_err(|e| unread("file/preview", &e))
-                });
-                host.file_previewed(&path, &rev, content);
-            }
-            (Asked::Shape(ask), outcome) => {
-                let answer = outcome
-                    .map_err(|e| e.message)
-                    .and_then(|v| serde_json::from_value(v).map_err(|e| unread(ask.method(), &e)));
-                host.shape_answered(&ask, answer);
-            }
-            _ => {}
+            (asked, outcome) => asked.answer(host, outcome.map_err(|e| e.message)),
         }
     }
 
@@ -275,25 +278,10 @@ impl Process {
                     let secs = t.request.as_secs_f32();
                     host.notify(format!("{name} didn't answer {command} in {secs} s"));
                 }
-                Asked::Read { path, rev } => {
+                asked => {
                     let secs = t.request.as_secs_f32();
-                    let why = format!("it didn't answer file/read in {secs} s");
-                    host.file_given(&path, &rev, Err(why));
-                }
-                Asked::Edit { path, rev } => {
-                    let secs = t.request.as_secs_f32();
-                    let why = format!("it didn't answer file/edit in {secs} s");
-                    host.file_edited(&path, &rev, Err(why));
-                }
-                Asked::Preview { path, rev } => {
-                    let secs = t.request.as_secs_f32();
-                    let why = format!("it didn't answer file/preview in {secs} s");
-                    host.file_previewed(&path, &rev, Err(why));
-                }
-                Asked::Shape(ask) => {
-                    let secs = t.request.as_secs_f32();
-                    let why = format!("it didn't answer {} in {secs} s", ask.method());
-                    host.shape_answered(&ask, Err(why));
+                    let why = format!("it didn't answer {} in {secs} s", asked.method());
+                    asked.answer(host, Err(why));
                 }
             }
         }
@@ -320,7 +308,7 @@ impl Extension for Process {
             return host.notify(format!("{name} isn't running, so {id} can't run"));
         }
         let params = json!({"id": id, "args": args});
-        self.ask(Asked::Command(id), "command/run", params, host);
+        self.ask(Asked::Command(id), params, host);
     }
 
     fn items(&mut self, news: News, host: &mut Host<'_>) {
@@ -351,7 +339,7 @@ impl Extension for Process {
             rev: read.rev.clone(),
         };
         let params = serde_json::to_value(read).unwrap_or_default();
-        self.ask(asked, "file/read", params, host);
+        self.ask(asked, params, host);
     }
 
     fn preview_file(&mut self, preview: FilePreview, host: &mut Host<'_>) {
@@ -364,7 +352,7 @@ impl Extension for Process {
             rev: preview.rev.clone(),
         };
         let params = serde_json::to_value(preview).unwrap_or_default();
-        self.ask(asked, "file/preview", params, host);
+        self.ask(asked, params, host);
     }
 
     fn shape(&mut self, ask: Ask, host: &mut Host<'_>) {
@@ -372,11 +360,10 @@ impl Extension for Process {
             let why = format!("{} isn't running", self.manifest.name);
             return host.shape_answered(&ask, Err(why));
         }
-        let method = ask.method();
         let params = (serde_json::to_value(&ask).ok())
             .and_then(|mut v| v.get_mut("params").map(Value::take))
             .unwrap_or_default();
-        self.ask(Asked::Shape(Box::new(ask)), method, params, host);
+        self.ask(Asked::Shape(Box::new(ask)), params, host);
     }
 
     fn edit_file(&mut self, edit: FileEdit, host: &mut Host<'_>) {
@@ -389,7 +376,7 @@ impl Extension for Process {
             rev: edit.rev.clone(),
         };
         let params = serde_json::to_value(edit).unwrap_or_default();
-        self.ask(asked, "file/edit", params, host);
+        self.ask(asked, params, host);
     }
 
     fn edited(
@@ -1067,6 +1054,37 @@ mod tests {
 
         tick_first(&mut core, tasks(&[]));
         assert_eq!(core.take_item_news(), [], "its subscription went with it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D3 (#267): a shape question is answered when the extension stops before answering it,
+    /// as when it doesn't answer in time, so the region doesn't wait on it for good.
+    #[test]
+    fn a_crash_answers_the_shape_question_it_left_waiting() {
+        static CRASH: Scripted = Scripted(|m| match m["method"].as_str() {
+            Some("initialize") => Some(vec![answer(m, json!({}))]),
+            Some("shape/region") => None,
+            _ => Some(Vec::new()),
+        });
+        let dir = workspace("shape-crash");
+        let mut core = Core::open(&dir).unwrap();
+        let mut r = scripted(&CRASH, &dir, None);
+        r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
+        let ask = Ask::Region {
+            placed: 1,
+            shape: "fake.tally".into(),
+            region: "count".into(),
+            inputs: Default::default(),
+        };
+        r.ask_shape(ExtId(0), Some(&mut core), ask);
+        poll_for(&mut r, &mut core, Duration::from_millis(50));
+        assert!(!r.running(ExtId(0)));
+        let shapes = crate::shapes::Shapes::default();
+        let answers: Vec<_> = (core.take_shape_answers(&shapes).into_iter())
+            .map(|a| (a.ask.method(), a.answer))
+            .collect();
+        let why = "it stopped: it exited with status 1";
+        assert_eq!(answers, [("shape/region", Err(why.into()))]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
