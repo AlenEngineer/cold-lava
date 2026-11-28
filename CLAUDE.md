@@ -106,7 +106,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   placed by `fit::anchored` so they never overlap; `draw.rs` paints a whole placed shape and
   previews it as text. Shape definitions are read by the engine (`shapes.rs`), not here, so the
   crate keeps no dependencies. **Paused 2026-11-20, no new work** on shapes, bindings and the
-  shape editor (this crate, `shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`, `shape_editor.rs`).
+  shape editor (this crate, `shapes.rs`, `bind.rs`, `shows.rs`, `act.rs`, `shape_ask.rs`,
+  `shape_editor.rs`).
   Foundations 11 and 12 still describe the design; what is missing is an owner for a placed
   shape's data, a new kind of book (ARCHITECTURE.md, "Where the story is ahead of the code";
   #375 says what must be decided to unpause). The whiteboard's own refactors (track F) go
@@ -210,8 +211,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   be refused if it changed since. Every write or delete that checks for a change goes through
   it (`files.rs`, `trash.rs`, `merge.rs`, `rename.rs`'s `Written` and `apply`, set-field, the
   tick, the shapes file, the board's save, the menu's tag edit, and the owned
-  file's edit and the relink check the core makes for the edit desk), except `gateway.rs`'s
-  item edit, `rename::check_unchanged` and `rename::owned_edit`, which move next (track A step
+  file's edit and the relink check the core makes for the edit desk), except a note's item
+  edit (`note_edit.rs`), `rename::check_unchanged` and `rename::owned_edit`, which move next (track A step
   A5, #265). `Seen::file` reads a file's bytes through a
   symlink, as a write does; `Seen::kept` holds bytes read earlier or just written, checked as
   `file` is; `Seen::entry` reads a file, a folder by its listing (`inside`) or a symlink by
@@ -499,6 +500,9 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   edit goes through `edit::plan` or `tasks::toggle_text` (in a file another owner reads,
   through that owner: `owner/edits.rs`), is read again and emits
   `Event::ItemEdited` naming who made it. Extensions and screens change items only here.
+  A note's edit is `note_edit.rs` (its Markdown owner makes the new text, `write::replace`
+  writes it, the answer is read back), which `Core::edit_item` calls, so the gateway reads no
+  owner and the owners read its messages (`Edit`, `Error`, `Reason`) one way.
 - `links.rs`: the link graph for `links/query` (every file links come from, where each leads,
   Obsidian's graph colour groups); `links/subscribe` news is queued with the items' news.
 - `files.rs`: the file messages of the workspace gateway (`workspace/read` with a `rev`, which
@@ -560,8 +564,10 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   shapes, the extension's `Host` (its permissions, its name) for an extension's. `edit` goes
   through `items/edit`, `create` through `workspace/create`, a recipe through
   `Core::run_recipe`; `rebind` returns what the placed shape becomes (`Binding::rebind`). The
-  extension's half is `shape/region` and `shape/gesture` (`Ask`, `Answered`), answered into
-  `Core::take_shape_answers`.
+  extension's half is `shape_ask.rs`: `shape/region` and `shape/gesture` (`Ask`, `Reply`,
+  `Answered`, and the `Gesture` an ask carries), answered into `Core::take_shape_answers`. It
+  reads none of `core`, `bind` and `act`, which all read it, so the three don't depend on
+  each other in a circle; what a region shows (`Entry`) is `shows.rs`'s.
 - `configured.rs`: `Configured`, what a frontend configured for the workspaces it opens (the
   flavour, `[style]`, the layers of types, attribute readings and shapes before a workspace's
   own). Data only, handed to `Core::open` and `workspace::scan`; each part's reader takes it

@@ -4,7 +4,7 @@
 use crate::manifest::Permission;
 use crate::protocol::{Effect, PaneId, PaneSpec};
 use crate::view::{Content, ViewId};
-use cold_lava_engine::act::{self, Ask, Reply};
+use cold_lava_engine::act;
 use cold_lava_engine::core::Core;
 use cold_lava_engine::files::{
     self, Create, Created, Deleted, Folder, KeptTexts, Listed, Restore, Restored, Stat, Text,
@@ -13,6 +13,7 @@ use cold_lava_engine::files::{
 use cold_lava_engine::gateway::{self, Answer, Edit, Found, Query, Reason, Select, SubId};
 use cold_lava_engine::owner::given::Given;
 use cold_lava_engine::rel_path;
+use cold_lava_engine::shape_ask::{Ask, Reply};
 use cold_lava_engine::types::Type;
 use serde_json::Value;
 use std::path::PathBuf;

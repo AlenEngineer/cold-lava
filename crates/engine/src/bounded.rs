@@ -1,8 +1,8 @@
 //! What another program sends, held in fields that each name their bound: an owner's answers
 //! to `file/read` and `file/edit` (`owner::given`, `owner::edits`) and an extension's answers
-//! to `shape/region` and `shape/gesture` (`act::Reply`, the steps of `shapes`). Each field of
-//! those types is a `Text`, a `List`, `Fields` or `Pairs` whose last parameters name its
-//! bound: `place: Text<Place>` is a place whose bound is 1 to 1024 bytes.
+//! to `shape/region` and `shape/gesture` (`shape_ask::Reply`, the steps of `shapes`). Each
+//! field of those types is a `Text`, a `List`, `Fields` or `Pairs` whose last parameters name
+//! its bound: `place: Text<Place>` is a place whose bound is 1 to 1024 bytes.
 //! `crates/cold-lava/tests/one_door.rs` fails on a field of those types that names no bound.
 //!
 //! **The type names the bound; it doesn't hold it.** A value read from an answer is

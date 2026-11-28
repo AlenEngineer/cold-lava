@@ -1,6 +1,8 @@
 use super::*;
 use crate::core::Event;
+use crate::shape_ask::{Answered, InputData, MemberData, RegionEntry, Reply};
 use crate::shapes::{self, Layer, Shapes, load};
+use indexmap::IndexMap;
 use serde_json::json;
 use std::path::PathBuf;
 

@@ -15,12 +15,12 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-use crate::act::{Ask, InputData, Inputs, MemberData, Rebind};
 use crate::core::{Core, Event};
 use crate::gateway::{Filter, News, Query, Select, SubId};
 use crate::origin::Origin;
+use crate::shape_ask::{Ask, InputData, Inputs, MemberData};
 use crate::shapes::{Loaded, Shapes, fill};
-use crate::shows::{Cond, Member, Shows};
+use crate::shows::{Cond, Entry, Member, Shows};
 
 /// Whom a binding's subscriptions belong to: the canvas, not an extension. The frontend hands
 /// news for this owner to its bindings (`Binding::heard`).
@@ -339,6 +339,13 @@ fn note(core: &Core, path: &str) -> Option<Member> {
     })
 }
 
+/// A placed shape becoming another shape with these inputs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Rebind {
+    pub shape: String,
+    pub inputs: IndexMap<String, Source>,
+}
+
 /// A placed shape's binding, live: the shape, its bound inputs and what they hold.
 #[derive(Clone, Debug)]
 pub struct Binding {
@@ -363,15 +370,6 @@ pub struct Shown {
 pub struct RegionShown {
     pub id: String,
     pub items: Vec<Entry>,
-}
-
-/// One member as a region shows it: what it is, and its label. An extension's answer is
-/// read as `act::RegionEntry`, never as this.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Entry {
-    /// A member's id; empty for a label of its own.
-    pub id: String,
-    pub label: String,
 }
 
 /// A text or a label of the shape, by its index among the shape's parts, filled in.

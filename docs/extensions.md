@@ -3263,7 +3263,7 @@ An extension's `[[shapes]]` can hand a region or a gesture to the extension itse
 the region language or the `on` steps can't say (docs/shapes.md, "Behaviour, as built"):
 `extension = true` on a region instead of `shows`, or on an `on` entry instead of `do`/`edit`.
 Only an extension's shapes may; anyone else's is dropped at load with that error. The host asks
-with two requests (host → extension; `crate::act::Ask` in the engine pins their JSON):
+with two requests (host → extension; `crate::shape_ask::Ask` in the engine pins their JSON):
 
 ```json
 {"method": "shape/region", "params": {"placed": 7, "shape": "tally.list", "region": "count",
@@ -3309,7 +3309,7 @@ with two requests (host → extension; `crate::act::Ask` in the engine pins thei
   one not answered in time is an error saying so) and wait in the core
   (`Core::take_shape_answers`) for the frontend's bindings: a region's go to
   `Binding::answered`, a gesture's steps to `Binding::run`. An answer from another extension
-  isn't taken. What the extension wrote is an `act::Reply`, and it waits unread. The
+  isn't taken. What the extension wrote is a `shape_ask::Reply`, and it waits unread. The
   frontend takes the answers with its loaded shapes (`take_shape_answers(&shapes)`), and
   gets only what `Reply::read` makes of each: an answer in the wrong form, or with steps
   that break a rule, is the reason instead, which the frontend says with the extension's

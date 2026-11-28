@@ -4,11 +4,12 @@
 
 use super::CNode;
 use super::placed::{Stored, UNIT};
-use crate::act::{Answered, Ask, ShapeAnswer};
-use crate::bind::{Binding, Entry};
+use crate::bind::Binding;
 use crate::core::{Core, Event};
 use crate::gateway::News;
+use crate::shape_ask::{Answered, Ask, ShapeAnswer};
 use crate::shapes::Shapes;
+use crate::shows::Entry;
 use cold_lava_canvas::fit::{self, Align, Flow, Room};
 use cold_lava_canvas::{
     Grid, Handle, Hit, Mask, Placed, Placement, Point, Rect, Res, Style, Viewport, draw, hit,

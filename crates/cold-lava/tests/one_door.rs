@@ -1593,21 +1593,20 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
 /// The engine's modules of answers: every type read with serde in them (`Deserialize`) is
 /// an answer's, or one of these, which another program never sends.
 const ANSWER_FILES: [&str; 4] = [
-    "act.rs",
     "owner/answer.rs",
     "owner/edits.rs",
     "owner/given.rs",
+    "shape_ask.rs",
 ];
-const NOT_ANSWERS: [&str; 7] = [
-    // What is asked of an extension, and what the frontend and the engine make.
-    "act.rs: Ask",
-    "act.rs: Gesture",
-    "act.rs: InputData",
-    "act.rs: MemberData",
-    "act.rs: Rebind",
+const NOT_ANSWERS: [&str; 6] = [
     // What is asked of an owner.
     "owner/edits.rs: FileEdit",
     "owner/given.rs: Change",
+    // What is asked of an extension, and what the frontend and the engine make.
+    "shape_ask.rs: Ask",
+    "shape_ask.rs: Gesture",
+    "shape_ask.rs: InputData",
+    "shape_ask.rs: MemberData",
 ];
 
 /// Every type of `ANSWER_FILES` that serde reads (it derives `Deserialize`), as `file: Type`.
@@ -1662,7 +1661,7 @@ fn every_field_of_an_answer_names_its_bound() {
     let mut roots = vec![
         "owner/given.rs: Given",
         "owner/edits.rs: NewText",
-        "act.rs: Reply",
+        "shape_ask.rs: Reply",
     ];
     roots.extend(
         serde_reads
@@ -1679,10 +1678,6 @@ fn every_field_of_an_answer_names_its_bound() {
          a leaf"
     );
     let listed = [
-        "act.rs: GestureWire",
-        "act.rs: RegionEntry",
-        "act.rs: RegionWire",
-        "act.rs: Reply",
         "alphabet.rs: Mark",
         "alphabet.rs: Role",
         "bounded.rs: AttributeName",
@@ -1723,6 +1718,10 @@ fn every_field_of_an_answer_names_its_bound() {
         "owner/given.rs: Run",
         "owner/given.rs: Wire",
         "owner/given.rs: WireLink",
+        "shape_ask.rs: GestureWire",
+        "shape_ask.rs: RegionEntry",
+        "shape_ask.rs: RegionWire",
+        "shape_ask.rs: Reply",
         "shapes.rs: CreateStep",
         "shapes.rs: EditStep",
         "shapes.rs: RebindStep",
