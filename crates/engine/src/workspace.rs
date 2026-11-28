@@ -447,12 +447,14 @@ pub fn decode_target(t: &str) -> String {
 }
 
 /// `path` written as a Markdown link target in the style of `original`: spaces always as
-/// `%20`; non-ASCII characters (and `%`) as UTF-8 escapes only if `original` wrote one that way.
+/// `%20` and `#` as `%23` (it would start a heading); non-ASCII characters (and `%`) as UTF-8
+/// escapes only if `original` wrote one that way.
 pub fn encode_target_like(path: &str, original: &str) -> String {
     let escapes_non_ascii = original.is_ascii() && !decode_target(original).is_ascii();
     let mut out = String::with_capacity(path.len());
     for c in path.chars() {
         match c {
+            '#' => out.push_str("%23"),
             ' ' => out.push_str("%20"),
             '%' if escapes_non_ascii => out.push_str("%25"),
             c if escapes_non_ascii && !c.is_ascii() => {
@@ -591,6 +593,11 @@ mod tests {
             encode_target_like("ʻAʻā.md", "Pāhoehoe.md"),
             "ʻAʻā.md",
             "written unescaped"
+        );
+        assert_eq!(
+            encode_target_like("C# notes/Hash #2.md", "Hot%20Rock.md"),
+            "C%23%20notes/Hash%20%232.md",
+            "a `#` would start a heading"
         );
     }
 
