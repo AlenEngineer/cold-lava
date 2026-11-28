@@ -637,7 +637,7 @@ fn the_index_is_still_read_outside_the_core_here() {
     let found = tally(per_file(&files, |code| times(code, &[".index"])));
     let left = [
         "../host/src/host.rs: .index ×2",
-        "home.rs: .index ×39",
+        "home.rs: .index ×37",
         "main.rs: .index ×3",
         "owned.rs: .index ×2",
     ];

@@ -18,7 +18,7 @@ use crate::frontmatter::{self, TagEdit};
 use crate::gateway::{Answer, Edit, Op, Reason, Ticket};
 use crate::hints::{Hints, Typed};
 use crate::history::{Exit, History, Nav, Place};
-use crate::index::Backlink;
+use crate::index::{Backlink, Index};
 use crate::line_input::{self, CtrlU};
 use crate::looks::{self, Looks};
 use crate::markdown::{self, Flavour};
@@ -1624,8 +1624,7 @@ impl Home {
             }
             Destination::NewNote(name) => {
                 // Another program may have written the link: its name can lead anywhere.
-                let note = self.core.as_ref().and_then(|c| c.index.by_path(from));
-                let Some(path) = self.create_named_note(&name, note) else {
+                let Some(path) = self.create_named_note(&name, |ix| ix.by_path(from)) else {
                     return;
                 };
                 self.leave(here, &path, None);
@@ -3302,10 +3301,8 @@ impl Home {
                         .unwrap();
                     self.open_found(from, &path, None);
                 } else if self.offers_create(&q) {
-                    let note = self.core.as_ref().and_then(|c| {
-                        let shown = self.shown.as_ref()?;
-                        c.index.by_path(shown)
-                    });
+                    let shown = self.shown.clone();
+                    let note = |ix: &Index| ix.by_path(shown.as_deref()?);
                     if let Some(path) = self.create_named_note(&q, note) {
                         self.open_found(from, &path, None);
                     }
@@ -4527,8 +4524,7 @@ impl Home {
                 self.ask_delete(paths, false, Some(view));
             }
             tidy_view::Action::Create { target, from } => {
-                let note = self.core.as_ref().and_then(|c| c.index.by_rel(&from));
-                match self.create_named_note(&target, note) {
+                match self.create_named_note(&target, |ix| ix.by_rel(&from)) {
                     Some(_) => self.show_tidy(view),
                     None => self.mode = Mode::Tidy(view),
                 }
@@ -5518,12 +5514,17 @@ impl Home {
         }
     }
 
-    /// Make the empty note `name` names, from note `from`, where a new note goes
+    /// Make the empty note `name` names, from the note `from` finds, where a new note goes
     /// (`files::new_note`), unless it is there, and say so by the name it got: the switcher's
     /// create, a link followed to a note that isn't there, and tidy's create. The note's path
     /// once it is there.
-    fn create_named_note(&mut self, name: &str, from: Option<usize>) -> Option<PathBuf> {
-        let new = files::new_note(&self.core.as_ref()?.index, name, from);
+    fn create_named_note(
+        &mut self,
+        name: &str,
+        from: impl FnOnce(&Index) -> Option<usize>,
+    ) -> Option<PathBuf> {
+        let ix = &self.core.as_ref()?.index;
+        let new = files::new_note(ix, name, from(ix));
         let new = match new {
             Ok(new) => new,
             Err(e) => {
