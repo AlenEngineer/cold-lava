@@ -1918,15 +1918,15 @@ impl Home {
         if same && jump.is_none() {
             return;
         }
-        let kept = self.is_kept(path);
         if !same {
             self.bsel = 0;
-            if !kept {
+            self.shown = Some(path.to_path_buf());
+            if self.shown_note().is_ok() {
                 self.remember_recent(path);
             }
-            self.shown = Some(path.to_path_buf());
             self.refresh_backlinks();
         }
+        let kept = self.shown_note().is_err();
         if self.registry.editor().is_none() || self.reader.is_some() || kept {
             if !same || self.reader.is_none() {
                 self.reader = Some(self.shown_reader());
@@ -1952,14 +1952,18 @@ impl Home {
         }
     }
 
-    /// Whether `path` is a kept text's hidden name (`files::names_kept`), which the editor
-    /// never opens.
-    fn is_kept(&self, path: &Path) -> bool {
-        let rel = self
-            .root
-            .as_deref()
-            .and_then(|root| rel_path::of(root, path));
-        rel.is_some_and(|rel| files::names_kept(&rel))
+    /// The note shown, for what changes it: refused when it is a kept text's hidden name
+    /// (`files::names_kept`), which is only read, so no editor, tag edit or copy writes beside
+    /// the engine's writes. Putting one away (`delete_target`) doesn't ask this.
+    fn shown_note(&self) -> Result<Option<PathBuf>, &'static str> {
+        let Some(shown) = self.shown.clone() else {
+            return Ok(None);
+        };
+        let rel = (self.root.as_deref()).and_then(|root| rel_path::of(root, &shown));
+        match rel.is_some_and(|rel| files::names_kept(&rel)) {
+            true => Err("a kept text is only read: copy what you need from it into its note"),
+            false => Ok(Some(shown)),
+        }
     }
 
     /// Apply what changed on disk (from the core's events).
@@ -2597,8 +2601,7 @@ impl Home {
                 self.core.is_some()
             }
             MenuCommand::Core(MenuAction::Read) => {
-                let shown = self.shown.as_deref();
-                (self.running_editor().is_some() && shown.is_some_and(|p| !self.is_kept(p)))
+                (self.running_editor().is_some() && matches!(self.shown_note(), Ok(Some(_))))
                     || self.viewed_note().is_some()
             }
             MenuCommand::Core(MenuAction::Hints | MenuAction::Outline) => {
@@ -2639,7 +2642,14 @@ impl Home {
             ReaderAction::Follow => self.follow_selected(),
             ReaderAction::Tick => self.tick_in_reader(),
             ReaderAction::Edit => {
-                let (Some(p), Some(root)) = (self.shown.clone(), self.root.clone()) else {
+                let p = match self.shown_note() {
+                    Ok(p) => p,
+                    Err(why) => {
+                        self.flash(why);
+                        return Ok(());
+                    }
+                };
+                let (Some(p), Some(root)) = (p, self.root.clone()) else {
                     return Ok(());
                 };
                 if let Some(err) = term::edit_file(terminal, &p, &root)? {
@@ -3462,11 +3472,13 @@ impl Home {
         match (self.focus, self.current()) {
             (Focus::Notes, Some(it)) if it.kind == ItemKind::Note => self.current_path(),
             (Focus::Notes, Some(_)) => None,
-            _ => self.shown.clone().or_else(|| {
-                self.current()
+            _ => match self.shown_note() {
+                Ok(Some(shown)) => Some(shown),
+                Ok(None) => (self.current())
                     .filter(|it| it.kind == ItemKind::Note)
-                    .and(self.current_path())
-            }),
+                    .and(self.current_path()),
+                Err(_) => None,
+            },
         }
     }
 
@@ -3702,7 +3714,10 @@ impl Home {
         let whom = match (self.marks.is_empty(), self.rename_target()) {
             (false, _) => Whom::Marked(self.marks.iter().cloned().collect()),
             (true, Some(note)) => Whom::Note(note),
-            (true, None) => Whom::Nobody,
+            (true, None) => match self.shown_note() {
+                Err(why) if self.focus != Focus::Notes => return self.flash(why),
+                _ => Whom::Nobody,
+            },
         };
         self.mode = Mode::Tag(TagPrompt::new(all.into_iter().collect(), root, whom));
     }
@@ -4092,6 +4107,9 @@ impl Home {
             return self.flash("only notes and whiteboards can be duplicated");
         }
         if self.shown.as_deref() == Some(path.as_path()) {
+            if let Err(why) = self.shown_note() {
+                return self.flash(why);
+            }
             self.save_editor();
         }
         let copy = match crate::merge::duplicate(&path) {
@@ -4674,7 +4692,9 @@ impl Home {
     fn delete_target(&self) -> Result<PathBuf, &'static str> {
         match (self.focus, self.current()) {
             (Focus::Notes, Some(_)) => self.current_path().ok_or("select a note to delete"),
-            _ => self.rename_target().ok_or("select a note to delete"),
+            _ => (self.rename_target())
+                .or_else(|| self.shown.clone())
+                .ok_or("select a note to delete"),
         }
     }
 
@@ -5432,8 +5452,9 @@ impl Home {
         let Some(v) = self.workspaces.get(self.vsel) else {
             return Ok(());
         };
-        let note = files::normal(note).map_err(|e| e.message)?;
-        files::resolve(&v.path, &note).map_err(|e| e.message)?;
+        // `resolve`, not `readable`: Obsidian is an editor, and a kept text is only read.
+        let path = files::resolve(&v.path, note).map_err(|e| e.message)?;
+        let note = rel_path::or_whole(&v.path, &path);
         let rel = note.strip_suffix(".md").unwrap_or(&note);
         let ok = term::open_in_obsidian(&v.name, rel);
         self.flash(if ok {

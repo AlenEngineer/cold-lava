@@ -151,6 +151,16 @@ fn a_kept_text_is_shown_opened_and_put_away_from_the_menu() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(!kept.exists(), "put away");
+    assert!(
+        !workspace.join("edited-by-editor").exists(),
+        "$EDITOR never ran on it"
+    );
+    let inbox = std::fs::read_dir(workspace.join("Inbox")).unwrap();
+    let left: Vec<_> = (inbox.flatten())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".Field Season"))
+        .collect();
+    assert!(left.is_empty(), "no copy of it was made: {left:?}");
     let files = system_trash(&home);
     assert_eq!(
         std::fs::read_to_string(files.join(".Field Season.cold-lava-kept-1700000000-0.md"))
