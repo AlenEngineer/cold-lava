@@ -136,7 +136,8 @@ impl Host<'_> {
 
     /// `workspace/open`: show a note, at a line; or the file of the item `item` at its place.
     /// The path, absolute under the workspace or relative to it, is read as the gateway reads
-    /// one (`files::resolve`: no hidden part, no `..`, no symlink) and must be a file there;
+    /// one (`files::readable`: no hidden part but a kept text's, no `..`, no symlink) and must
+    /// be a file there;
     /// the frontend is handed it in its normal spelling, so it never sees a path the gateway
     /// refuses.
     pub fn open_note(
@@ -146,8 +147,8 @@ impl Host<'_> {
         item: Option<String>,
     ) -> Result<(), gateway::Error> {
         let core = self.workspace()?;
-        let rel = files::normal(&rel_path::or_whole(core.root(), &note))?;
-        if !files::resolve(core.root(), &rel)?.is_file() {
+        let (rel, path) = files::readable(core.root(), &rel_path::or_whole(core.root(), &note))?;
+        if !path.is_file() {
             let why = format!("{rel}: there is no file there");
             return Err(gateway::Error::new(Reason::Refused, why));
         }

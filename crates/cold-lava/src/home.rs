@@ -1918,13 +1918,16 @@ impl Home {
         if same && jump.is_none() {
             return;
         }
+        let kept = self.is_kept(path);
         if !same {
             self.bsel = 0;
-            self.remember_recent(path);
+            if !kept {
+                self.remember_recent(path);
+            }
             self.shown = Some(path.to_path_buf());
             self.refresh_backlinks();
         }
-        if self.registry.editor().is_none() || self.reader.is_some() {
+        if self.registry.editor().is_none() || self.reader.is_some() || kept {
             if !same || self.reader.is_none() {
                 self.reader = Some(self.shown_reader());
             }
@@ -1933,7 +1936,8 @@ impl Home {
             }
         }
         // The editor follows along while the reader is shown, so switching back finds the note.
-        let Some(editor) = self.registry.editor() else {
+        // A kept text is only read: an editor's save would write it outside the engine.
+        let Some(editor) = self.registry.editor().filter(|_| !kept) else {
             return;
         };
         let request = EditorRequest::Open {
@@ -1946,6 +1950,16 @@ impl Home {
             self.shown = None;
             self.show_at(path, jump);
         }
+    }
+
+    /// Whether `path` is a kept text's hidden name (`files::names_kept`), which the editor
+    /// never opens.
+    fn is_kept(&self, path: &Path) -> bool {
+        let rel = self
+            .root
+            .as_deref()
+            .and_then(|root| rel_path::of(root, path));
+        rel.is_some_and(|rel| files::names_kept(&rel))
     }
 
     /// Apply what changed on disk (from the core's events).
@@ -2583,7 +2597,8 @@ impl Home {
                 self.core.is_some()
             }
             MenuCommand::Core(MenuAction::Read) => {
-                (self.running_editor().is_some() && self.shown.is_some())
+                let shown = self.shown.as_deref();
+                (self.running_editor().is_some() && shown.is_some_and(|p| !self.is_kept(p)))
                     || self.viewed_note().is_some()
             }
             MenuCommand::Core(MenuAction::Hints | MenuAction::Outline) => {

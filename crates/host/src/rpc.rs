@@ -950,9 +950,24 @@ mod tests {
             };
             assert_eq!(effects, [open], "{note}");
         }
+        let kept = ".Plan.cold-lava-kept-5-0.md";
+        std::fs::write(dir.join(kept), "theirs\n").unwrap();
+        let (answer, effects) = served(&mut core, &[], "workspace/open", json!({"note": kept}));
+        assert_eq!(
+            answer,
+            Ok(Value::Null),
+            "a kept text is read as workspace/read reads it"
+        );
+        let open = Effect::OpenNote {
+            note: kept.into(),
+            line: None,
+            item: None,
+        };
+        assert_eq!(effects, [open]);
         let outside = dir.with_file_name("Outside.md");
         for note in [
             json!(".obsidian/graph.json"),
+            json!(".Plan.md"),
             json!("Inbox/../Plan.md"),
             json!(outside),
             json!("Nope.md"),

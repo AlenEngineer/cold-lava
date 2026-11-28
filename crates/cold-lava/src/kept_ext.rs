@@ -199,7 +199,9 @@ impl Extension for Kept {
             ViewNews::Closed { view } if Some(view) == self.view => self.view = None,
             ViewNews::Event(Happened { view, event }) if Some(view) == self.view => match event {
                 view::Event::Activated { row } if self.find(&row).is_some() => {
-                    host.open_note(row.into(), None, None);
+                    if let Err(e) = host.open_note(row.into(), None, None) {
+                        host.notify(format!("the kept text couldn't be opened: {e}"));
+                    }
                 }
                 view::Event::Command {
                     command,
