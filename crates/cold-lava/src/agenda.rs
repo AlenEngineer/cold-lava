@@ -435,8 +435,11 @@ impl Extension for Agenda {
             }
             ViewNews::Event(Happened { view, event }) if view == shown.view => match event {
                 view::Event::Activated { row } => {
-                    if let Some(at) = shown.at.get(&row) {
-                        host.open_note(at.note.clone().into(), Some(at.line), Some(row));
+                    if let Some(at) = shown.at.get(&row)
+                        && let Err(e) =
+                            host.open_note(at.note.clone().into(), Some(at.line), Some(row))
+                    {
+                        host.notify(e.message);
                     }
                 }
                 view::Event::Toggled { row } => {

@@ -361,7 +361,7 @@ fn serve_now(
         } => return answer(host.update_view(view, content, select)),
         Call::CloseView { view } => host.close_view(view),
         Call::ShowView { view } => host.show_view(view),
-        Call::OpenNote { note, line, item } => host.open_note(note, line, item),
+        Call::OpenNote { note, line, item } => return answer(host.open_note(note, line, item)),
     }
     Ok(Value::Null)
 }
@@ -927,6 +927,61 @@ mod tests {
         let (pane, effects) = served(&mut core, &[], "pane/open", spec);
         assert_eq!(pane, Ok(json!({"pane": 1})));
         assert!(matches!(&effects[..], [Effect::OpenPane { .. }]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `workspace/open` reads its path as `workspace/read` does (#451): a hidden folder, `..`,
+    /// a path outside or one to no file is refused to the extension and nothing is queued, and the frontend
+    /// is handed the path in its one spelling, so an owned file is found by it.
+    #[test]
+    fn workspace_open_reads_its_path_as_the_gateway_does() {
+        let dir = workspace("open");
+        std::fs::write(dir.join(".obsidian/graph.json"), "{}\n").unwrap();
+        std::fs::create_dir(dir.join("Inbox")).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let whole = core.root().join("Plan.md");
+        for note in [json!("Plan.md/"), json!("Plan.md"), json!(whole)] {
+            let (answer, effects) = served(&mut core, &[], "workspace/open", json!({"note": note}));
+            assert_eq!(answer, Ok(Value::Null), "{note}");
+            let open = Effect::OpenNote {
+                note: "Plan.md".into(),
+                line: None,
+                item: None,
+            };
+            assert_eq!(effects, [open], "{note}");
+        }
+        let kept = ".Plan.cold-lava-kept-5-0.md";
+        std::fs::write(dir.join(kept), "theirs\n").unwrap();
+        let (answer, effects) = served(&mut core, &[], "workspace/open", json!({"note": kept}));
+        assert_eq!(
+            answer,
+            Ok(Value::Null),
+            "a kept text is read as workspace/read reads it"
+        );
+        let open = Effect::OpenNote {
+            note: kept.into(),
+            line: None,
+            item: None,
+        };
+        assert_eq!(effects, [open]);
+        let outside = dir.with_file_name("Outside.md");
+        for note in [
+            json!(".obsidian/graph.json"),
+            json!(".Plan.md"),
+            json!("Inbox/../Plan.md"),
+            json!(outside),
+            json!("Nope.md"),
+            json!("Inbox"),
+        ] {
+            let (answer, effects) = served(&mut core, &[], "workspace/open", json!({"note": note}));
+            let refused = answer.unwrap_err();
+            assert_eq!(
+                (refused.code, reason(&refused)),
+                (REFUSED, "refused"),
+                "{note}"
+            );
+            assert!(effects.is_empty(), "{note} isn't opened");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

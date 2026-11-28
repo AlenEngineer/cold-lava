@@ -1285,8 +1285,9 @@ impl Home {
         };
     }
 
-    /// `workspace/open`: the note at `note` (inside the workspace, absolute or relative to it),
-    /// at `line`, from where you are.
+    /// `workspace/open`: the note at `note`, at `line`, from where you are. `note` is the
+    /// gateway's normal spelling of a file's path relative to the workspace: the host read it
+    /// (`Host::open_note`). It is checked again only in case the file went since.
     fn open_for(&mut self, ext: ExtId, note: &Path, line: Option<usize>, item: Option<String>) {
         let Some(root) = self.root.clone() else {
             return;
@@ -1294,10 +1295,8 @@ impl Home {
         if let Some(why) = self.unsaved_in_front() {
             return self.held_back(ext, &format!("open {}", note.display()), why);
         }
-        let owned = self.core.as_ref().and_then(|c| {
-            let rel = rel_path::or_whole(c.root(), note);
-            (c.index.workspace.owned.iter()).find(|f| f.rel == rel)
-        });
+        let owned = (self.core.as_ref())
+            .and_then(|c| (c.index.workspace.owned.iter()).find(|f| Path::new(&f.rel) == note));
         if let Some(f) = owned {
             let place = item.and_then(|id| f.places.get(&id).cloned());
             let path = f.path.clone();
@@ -1308,11 +1307,7 @@ impl Home {
             return self.open_file_at(&path, place);
         }
         let path = root.join(note);
-        let inside = match (path.canonicalize(), root.canonicalize()) {
-            (Ok(p), Ok(r)) => p.starts_with(r) && p.is_file(),
-            _ => false,
-        };
-        if !inside {
+        if !path.is_file() {
             let name = &self.registry.manifest(ext).name;
             let note = note.display();
             return self.flash(format!(
@@ -1421,10 +1416,7 @@ impl Home {
                 Ok(Note { note }) if a == MenuAction::EditFullscreen => {
                     self.edit_note_fullscreen(&note, terminal)
                 }
-                Ok(Note { note }) => {
-                    self.open_note_in_obsidian(&note);
-                    Ok(())
-                }
+                Ok(Note { note }) => self.open_note_in_obsidian(&note),
                 Err(e) => Err(e.to_string()),
             },
             Some(c) => return self.run_menu_command(c, args, terminal),
@@ -1928,11 +1920,14 @@ impl Home {
         }
         if !same {
             self.bsel = 0;
-            self.remember_recent(path);
             self.shown = Some(path.to_path_buf());
+            if self.shown_note().is_ok() {
+                self.remember_recent(path);
+            }
             self.refresh_backlinks();
         }
-        if self.registry.editor().is_none() || self.reader.is_some() {
+        let kept = self.shown_note().is_err();
+        if self.registry.editor().is_none() || self.reader.is_some() || kept {
             if !same || self.reader.is_none() {
                 self.reader = Some(self.shown_reader());
             }
@@ -1941,7 +1936,8 @@ impl Home {
             }
         }
         // The editor follows along while the reader is shown, so switching back finds the note.
-        let Some(editor) = self.registry.editor() else {
+        // A kept text is only read: an editor's save would write it outside the engine.
+        let Some(editor) = self.registry.editor().filter(|_| !kept) else {
             return;
         };
         let request = EditorRequest::Open {
@@ -1953,6 +1949,20 @@ impl Home {
             // It couldn't start: show the note in the reader instead.
             self.shown = None;
             self.show_at(path, jump);
+        }
+    }
+
+    /// The note shown, for what changes it: refused when it is a kept text's hidden name
+    /// (`files::names_kept`), which is only read, so no editor, tag edit or copy writes beside
+    /// the engine's writes. Putting one away (`delete_target`) doesn't ask this.
+    fn shown_note(&self) -> Result<Option<PathBuf>, &'static str> {
+        let Some(shown) = self.shown.clone() else {
+            return Ok(None);
+        };
+        let rel = (self.root.as_deref()).and_then(|root| rel_path::of(root, &shown));
+        match rel.is_some_and(|rel| files::names_kept(&rel)) {
+            true => Err("a kept text is only read: copy what you need from it into its note"),
+            false => Ok(Some(shown)),
         }
     }
 
@@ -2591,7 +2601,7 @@ impl Home {
                 self.core.is_some()
             }
             MenuCommand::Core(MenuAction::Read) => {
-                (self.running_editor().is_some() && self.shown.is_some())
+                (self.running_editor().is_some() && matches!(self.shown_note(), Ok(Some(_))))
                     || self.viewed_note().is_some()
             }
             MenuCommand::Core(MenuAction::Hints | MenuAction::Outline) => {
@@ -2632,7 +2642,14 @@ impl Home {
             ReaderAction::Follow => self.follow_selected(),
             ReaderAction::Tick => self.tick_in_reader(),
             ReaderAction::Edit => {
-                let (Some(p), Some(root)) = (self.shown.clone(), self.root.clone()) else {
+                let p = match self.shown_note() {
+                    Ok(p) => p,
+                    Err(why) => {
+                        self.flash(why);
+                        return Ok(());
+                    }
+                };
+                let (Some(p), Some(root)) = (p, self.root.clone()) else {
                     return Ok(());
                 };
                 if let Some(err) = term::edit_file(terminal, &p, &root)? {
@@ -3455,11 +3472,13 @@ impl Home {
         match (self.focus, self.current()) {
             (Focus::Notes, Some(it)) if it.kind == ItemKind::Note => self.current_path(),
             (Focus::Notes, Some(_)) => None,
-            _ => self.shown.clone().or_else(|| {
-                self.current()
+            _ => match self.shown_note() {
+                Ok(Some(shown)) => Some(shown),
+                Ok(None) => (self.current())
                     .filter(|it| it.kind == ItemKind::Note)
-                    .and(self.current_path())
-            }),
+                    .and(self.current_path()),
+                Err(_) => None,
+            },
         }
     }
 
@@ -3695,7 +3714,10 @@ impl Home {
         let whom = match (self.marks.is_empty(), self.rename_target()) {
             (false, _) => Whom::Marked(self.marks.iter().cloned().collect()),
             (true, Some(note)) => Whom::Note(note),
-            (true, None) => Whom::Nobody,
+            (true, None) => match self.shown_note() {
+                Err(why) if self.focus != Focus::Notes => return self.flash(why),
+                _ => Whom::Nobody,
+            },
         };
         self.mode = Mode::Tag(TagPrompt::new(all.into_iter().collect(), root, whom));
     }
@@ -4079,6 +4101,9 @@ impl Home {
             return self.flash("only notes and whiteboards can be duplicated");
         }
         if self.shown.as_deref() == Some(path.as_path()) {
+            if let Err(why) = self.shown_note() {
+                return self.flash(why);
+            }
             self.save_editor();
         }
         let copy = match crate::merge::duplicate(&path) {
@@ -4661,7 +4686,9 @@ impl Home {
     fn delete_target(&self) -> Result<PathBuf, &'static str> {
         match (self.focus, self.current()) {
             (Focus::Notes, Some(_)) => self.current_path().ok_or("select a note to delete"),
-            _ => self.rename_target().ok_or("select a note to delete"),
+            _ => (self.rename_target())
+                .or_else(|| self.shown.clone())
+                .ok_or("select a note to delete"),
         }
     }
 
@@ -5415,17 +5442,21 @@ impl Home {
     }
 
     /// `note.open-in-obsidian` of a note an extension names.
-    fn open_note_in_obsidian(&mut self, note: &str) {
+    fn open_note_in_obsidian(&mut self, note: &str) -> Result<(), String> {
         let Some(v) = self.workspaces.get(self.vsel) else {
-            return;
+            return Ok(());
         };
-        let rel = note.strip_suffix(".md").unwrap_or(note);
+        // `resolve`, not `readable`: Obsidian is an editor, and a kept text is only read.
+        let path = files::resolve(&v.path, note).map_err(|e| e.message)?;
+        let note = rel_path::or_whole(&v.path, &path);
+        let rel = note.strip_suffix(".md").unwrap_or(&note);
         let ok = term::open_in_obsidian(&v.name, rel);
         self.flash(if ok {
             "opened in Obsidian"
         } else {
             "couldn't launch Obsidian"
         });
+        Ok(())
     }
 
     fn open_in_obsidian(&mut self) {

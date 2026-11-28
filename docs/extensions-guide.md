@@ -225,7 +225,8 @@ def view_closed(params):                       # Esc or q
   and the filter by id, and draws only the last update of each frame, so sending one on every
   `items/changed` is fine. `update_view(view, content, select=id)` also selects a row.
 - **Going to a note.** `open_note(note, line)` (`workspace/open`) opens a note at a line. Back
-  (`Ctrl-o`) returns to your view as it was, as long as it is open.
+  (`Ctrl-o`) returns to your view as it was, as long as it is open. A path the gateway
+  refuses (a hidden folder, `..`, a symbolic link, no file there) raises `Refused`.
 - **Coming back to a view.** `show_view(view)` (`view/show`) brings one of your open views to
   the front from wherever the user is, as it was left (selection, folds, sort, filter), and Back
   returns to where they were. Use it instead of opening a second view of the same thing.

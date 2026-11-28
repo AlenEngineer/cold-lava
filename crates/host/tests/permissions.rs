@@ -621,6 +621,45 @@ fn no_permission_reaches_through_a_symlink() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `workspace/open` is answered as `workspace/read` is (#451): whoever asks, a path in a hidden
+/// folder, through `..` or outside the workspace is refused in the host, so no frontend is
+/// handed one to open.
+#[test]
+fn workspace_open_is_refused_a_path_the_gateway_refuses() {
+    use Permission::FilesRead;
+    let (dir, root) = workspace("open");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join(".git/config"), "[core]\n\tbare = false\n").unwrap();
+    let mut core = Core::open(&root).unwrap();
+    let mut r = Registry::new(vec![quiet("reader", &[FilesRead], &[])]);
+    let reader = ExtId(0);
+    let open = |r: &mut Registry, core: &mut Core, note: &str| {
+        ask(r, core, reader, |h| h.open_note(note.into(), None, None))
+    };
+    assert_eq!(open(&mut r, &mut core, "Concepts/Lava.md"), Ok(()));
+    for note in [
+        ".git/config",
+        ".obsidian/graph.json",
+        "Concepts/../.git/config",
+        "/etc/hostname",
+    ] {
+        assert_eq!(
+            open(&mut r, &mut core, note),
+            Err(Reason::Refused),
+            "{note}"
+        );
+        let read = ask(&mut r, &mut core, reader, |h| h.read_file(note));
+        assert_eq!(
+            read.map(drop),
+            Err(Reason::Refused),
+            "{note} isn't read either"
+        );
+    }
+    let folder = open(&mut r, &mut core, "Concepts");
+    assert_eq!(folder, Err(Reason::Refused), "a folder isn't a note");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The `trash-can` extension of this folder in a process of its own, installed in `dir` with
 /// `permissions` in place of its manifest's and the examples' `cold_lava.py` beside it.
 fn trash_can(dir: &Path, permissions: &str) -> Registry {

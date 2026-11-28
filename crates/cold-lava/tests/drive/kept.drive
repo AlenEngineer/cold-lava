@@ -1,11 +1,13 @@
 # A text kept from a save race (#427). tests/drive.rs leaves one beside Inbox/Field Season.md, as
 # a save that met two other programs' saves of it leaves it: under a hidden name, which the tree
 # and Obsidian pass by. The status line says so from the start; the palette's "kept texts"
-# lists it with the note it is for and opens on it, Enter opens it in the reader, d puts it away
+# lists it with the note it is for and opens on it, Enter opens it in the reader, where it is
+# only read (no $EDITOR, tag edit or copy), d puts it away
 # to the trash and the status line no longer says it, u puts it back where it was and d again
 # puts it away. One that appears later is said at once.
 size 140x30
 env COLD_LAVA_EDITOR=none
+env VISUAL=touch edited-by-editor
 wait-for 1 kept text
 keys :
 type kept texts
@@ -17,6 +19,17 @@ expect .Field Season.cold-lava-kept-
 screen
 keys enter
 wait-for The text another program saved meanwhile.
+keys e
+wait-for a kept text is only read
+wait-gone 10s a kept text is only read
+type #
+wait-for a kept text is only read
+expect-not tag the note
+wait-gone 10s a kept text is only read
+type D
+wait-for a kept text is only read
+expect-not duplicated
+expect The text another program saved meanwhile.
 keys ctrl+o
 wait-for Beside the note each is for
 keys d
