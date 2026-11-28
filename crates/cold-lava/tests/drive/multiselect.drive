@@ -41,9 +41,10 @@ wait-for move 3 marked into folder · ⏎ preview · Esc cancel
 type Archive
 keys enter
 wait-for Move 3 items into Archive/
+expect 6 links in 3 files will be updated:
 screen
 keys enter
-wait-for moved 3 items to Archive
+wait-for moved 3 items to Archive · 6 links updated in 3 files
 expect-not ✓
 keys p loose
 wait-for Loose thought
