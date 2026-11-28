@@ -1569,9 +1569,9 @@ fields.text = { rest = true }
         }
     }
 
-    /// An anchored item's id is `^name` hashed with its note and kind (`items::identify`), so
-    /// it survives what moves an address: new words, a tick, a field, lines around it and a
-    /// renamed heading above it.
+    /// An anchored item's id is `^name` hashed with its note and kind
+    /// (`owner/markdown/walk/ids.rs`), so it survives what moves an address: new words, a tick,
+    /// a field, lines around it and a renamed heading above it.
     #[test]
     fn an_anchored_item_keeps_its_id_through_a_reword_a_tick_a_field_a_reorder_and_its_heading() {
         let dir = workspace("anchor-keeps");

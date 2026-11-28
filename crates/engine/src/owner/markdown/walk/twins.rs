@@ -1,4 +1,4 @@
-//! Twins (#327). `identify` keys the items of a kind with one anchor `anchor`, `anchor.1`,
+//! Twins (#327). Markdown keys the items of a kind with one anchor `anchor`, `anchor.1`,
 //! `anchor.2` and so on, and the items keyed under an item (its list items, the inline items
 //! in it) by its key. Twins are items of one kind whose keys differ only in those counts. A
 //! count is a place among twins, so when a twin comes or goes, each twin after it takes the
@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-/// An item of a note as `identify` keyed it.
+/// An item of a note as the Markdown owner keyed it.
 pub(super) struct Keyed<'a> {
     pub kind: &'a str,
     /// The item it is keyed under: its anchor is that item's key, then `own`.
@@ -75,7 +75,7 @@ pub(super) fn of(items: &[Keyed]) -> Vec<Option<Twin>> {
 mod tests {
     use super::*;
 
-    /// `(kind, under, own, rev)`, as `identify` keys items.
+    /// `(kind, under, own, rev)`, as the Markdown owner keys items.
     fn of_these(items: &[(&str, Option<usize>, &str, &str)]) -> Vec<Option<Twin>> {
         let keyed: Vec<Keyed> = (items.iter())
             .map(|&(kind, under, own, rev)| Keyed {
