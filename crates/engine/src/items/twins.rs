@@ -1,4 +1,4 @@
-//! Twins (#327). The Markdown owner keys the items of a kind with one anchor `anchor`, `anchor.1`,
+//! Twins (#327). Markdown keys the items of a kind with one anchor `anchor`, `anchor.1`,
 //! `anchor.2` and so on, and the items keyed under an item (its list items, the inline items
 //! in it) by its key. Twins are items of one kind whose keys differ only in those counts. A
 //! count is a place among twins, so when a twin comes or goes, each twin after it takes the
