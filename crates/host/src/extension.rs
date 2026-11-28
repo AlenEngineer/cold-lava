@@ -5,10 +5,10 @@ use crate::host::Host;
 use crate::manifest::Manifest;
 use crate::protocol::{CommandRequest, EditorRequest, FileNews, FilePreview, PaneNews};
 use crate::view::ViewNews;
-use cold_lava_engine::act::Ask;
 use cold_lava_engine::gateway::{self, Edited, News, Ticket};
 use cold_lava_engine::owner::cache::FileRead;
 use cold_lava_engine::owner::edits::FileEdit;
+use cold_lava_engine::shape_ask::Ask;
 use std::path::Path;
 
 /// An extension: built into cold-lava, or a `process::Process` speaking for one in its own

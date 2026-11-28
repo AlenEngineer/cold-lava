@@ -2,7 +2,6 @@
 //! re-reads just the notes that change, and tells subscribers what changed, whatever caused it
 //! (cold-lava, Obsidian, Neovim, git…).
 
-use crate::act::{Ask, Replied, Reply, ShapeAnswer};
 use crate::configured::Configured;
 use crate::files;
 use crate::gateway::{
@@ -10,12 +9,14 @@ use crate::gateway::{
 };
 use crate::index::Index;
 use crate::items::Item;
+use crate::note_edit;
 use crate::owner::cache::{FileRead, Kind as OwnedKind, Owners};
 use crate::owner::edits::{Edits, FileEdit, ItemEdit, ToWrite};
 use crate::owner::given::{self, Change, Given};
 use crate::owner::markdown::{self, After};
 use crate::read::{self, Seen};
 use crate::rel_path;
+use crate::shape_ask::{Ask, Replied, Reply, ShapeAnswer};
 use crate::trash::{self, Bin, system_bin};
 use crate::workspace::{self, NoteChange, Owned, Workspace};
 use crate::write::WriteError;
@@ -493,7 +494,7 @@ impl Core {
         if let Some(i) = self.owned_holding(&edit.id) {
             return self.edit_owned(by, i, edit);
         }
-        let written = gateway::write(self.root(), &self.index.workspace, edit)?;
+        let written = note_edit::write(self.root(), &self.index.workspace, edit)?;
         if written.changed {
             let mut events = self.refresh(&[self.root().join(&written.note)]);
             events.push(Event::ItemEdited {
@@ -504,7 +505,7 @@ impl Core {
             });
             self.announce(events);
         }
-        let edited = gateway::read_back(&self.index.workspace, written)?;
+        let edited = note_edit::read_back(&self.index.workspace, written)?;
         Ok(Answer::Now(Box::new(edited)))
     }
 
@@ -517,7 +518,7 @@ impl Core {
             let message = format!("{rel} is read by {owner}, which writes it only for a real edit");
             return Err(gateway::Error::new(Reason::Refused, message));
         }
-        gateway::would(self.root(), &self.index.workspace, edit)
+        note_edit::would(self.root(), &self.index.workspace, edit)
     }
 
     /// The item `id` of the file at workspace-relative `rel` (with its extension), as

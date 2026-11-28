@@ -108,6 +108,15 @@ impl Member {
     }
 }
 
+/// One member as a region shows it: what it is, and its label. An extension's answer is
+/// read as `shape_ask::RegionEntry`, never as this.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Entry {
+    /// A member's id; empty for a label of its own.
+    pub id: String,
+    pub label: String,
+}
+
 /// A value as text: a string as it is, a number or a bool as written, a list joined with ", ".
 pub fn text_of(v: &Json) -> Option<String> {
     match v {

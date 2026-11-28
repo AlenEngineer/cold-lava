@@ -31,11 +31,12 @@ use walkdir::WalkDir;
 mod live;
 mod placed;
 
-use crate::act::{self, Acted, Answered, Done, Gesture};
+use crate::act::{self, Acted, Done};
 use crate::bind::{Binding, Source};
 use crate::core::{Core, Event as CoreEvent};
 use crate::ext::{Effect, ExtId, Registry};
 use crate::gateway::News;
+use crate::shape_ask::{self, Answered, Gesture};
 use cold_lava_canvas::{Cell as GridCell, Handle, Point, Style as Token, Viewport, draw as ink};
 use live::Live;
 
@@ -698,7 +699,7 @@ impl Board {
                     self.gesturing = None;
                     self.flash(format!("{}: {why}", answer.by));
                 }
-                (_, a) => self.live.answered(crate::act::ShapeAnswer {
+                (_, a) => self.live.answered(shape_ask::ShapeAnswer {
                     answer: a,
                     ..answer
                 }),
@@ -4130,16 +4131,16 @@ mod tests {
         }
         fn pane(&mut self, _: crate::ext::PaneNews, _: &mut crate::ext::Host<'_>) {}
         fn editor(&mut self, _: crate::ext::EditorRequest, _: &mut crate::ext::Host<'_>) {}
-        fn shape(&mut self, ask: act::Ask, host: &mut crate::ext::Host<'_>) {
+        fn shape(&mut self, ask: shape_ask::Ask, host: &mut crate::ext::Host<'_>) {
             host.notify("chatty counted");
             host.status(Some("chatty: 1".into()));
             if self.pushy {
                 (host.open_note("Krakatoa.md".into(), None, None)).expect("it is a note");
                 host.run_command("search.open", Value::Null);
             }
-            let answer: Result<act::Reply, String> = match &ask {
-                act::Ask::Region { .. } => Err("nothing to show".into()),
-                act::Ask::Gesture { .. } => Ok(act::Reply::Gesture {
+            let answer: Result<shape_ask::Reply, String> = match &ask {
+                shape_ask::Ask::Region { .. } => Err("nothing to show".into()),
+                shape_ask::Ask::Gesture { .. } => Ok(shape_ask::Reply::Gesture {
                     steps: serde_json::from_value(json!([
                         {"edit": {"item": "clicked", "set-field": {"field": "visited"}}}
                     ]))

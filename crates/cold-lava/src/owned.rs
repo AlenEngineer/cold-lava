@@ -3,13 +3,13 @@
 //! what the owners gave before (their cache); an item edit goes through the core, and a rename
 //! or an edit of a file another owner reads starts the owners it needs and waits for them.
 
-use crate::act::{Answered, Ask};
 use crate::core::{Applying, Core, NotApplied, Planned};
 use crate::edit::EditError;
 use crate::ext::{Effect, ExtId, Registry};
 use crate::gateway::{self, Answer, Edit, Edited, Error, Op, Reason};
 use crate::index::Index;
 use crate::items::{Data, Item};
+use crate::shape_ask::{Answered, Ask};
 use crate::tasks::{NextTask, StatusType, Toggled};
 use crate::{paths, workspace};
 use anyhow::{Context, Result, anyhow, bail};

@@ -6,11 +6,11 @@ use crate::host::{ExtId, Host};
 use crate::manifest::{FileType, Manifest, Permission, Shows, claimable, leave_out_definitions};
 use crate::protocol::Effect;
 use crate::{installed, process};
-use cold_lava_engine::act::Ask;
 use cold_lava_engine::core::Core;
 use cold_lava_engine::files;
 use cold_lava_engine::owner::cache::Kind;
 use cold_lava_engine::problem::Problem;
+use cold_lava_engine::shape_ask::Ask;
 use std::path::Path;
 
 /// The reader, a screen of the menu's built the way an extension will be: it reaches notes as

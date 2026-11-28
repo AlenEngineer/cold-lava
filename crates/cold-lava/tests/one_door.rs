@@ -18,7 +18,11 @@
 //!
 //! It reads the terminal app, and the host only for its reads of the core's index. Nothing
 //! else guards the host or the engine's own feature modules (#226's test isn't written).
+//!
+//! It also reads the engine's modules for which of them name each other (#271, track C), so a
+//! module cycle that was cut can't come back and the ones left only go.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// What follows `mod ` on a line that declares a module, whatever its visibility
@@ -1595,21 +1599,20 @@ fn answer_types(files: &[(String, String)], roots: &[&str]) -> (Vec<String>, Vec
 /// The engine's modules of answers: every type read with serde in them (`Deserialize`) is
 /// an answer's, or one of these, which another program never sends.
 const ANSWER_FILES: [&str; 4] = [
-    "act.rs",
     "owner/answer.rs",
     "owner/edits.rs",
     "owner/given.rs",
+    "shape_ask.rs",
 ];
-const NOT_ANSWERS: [&str; 7] = [
-    // What is asked of an extension, and what the frontend and the engine make.
-    "act.rs: Ask",
-    "act.rs: Gesture",
-    "act.rs: InputData",
-    "act.rs: MemberData",
-    "act.rs: Rebind",
+const NOT_ANSWERS: [&str; 6] = [
     // What is asked of an owner.
     "owner/edits.rs: FileEdit",
     "owner/given.rs: Change",
+    // What is asked of an extension, and what the frontend and the engine make.
+    "shape_ask.rs: Ask",
+    "shape_ask.rs: Gesture",
+    "shape_ask.rs: InputData",
+    "shape_ask.rs: MemberData",
 ];
 
 /// Every type of `ANSWER_FILES` that serde reads (it derives `Deserialize`), as `file: Type`.
@@ -1664,7 +1667,7 @@ fn every_field_of_an_answer_names_its_bound() {
     let mut roots = vec![
         "owner/given.rs: Given",
         "owner/edits.rs: NewText",
-        "act.rs: Reply",
+        "shape_ask.rs: Reply",
     ];
     roots.extend(
         serde_reads
@@ -1681,10 +1684,6 @@ fn every_field_of_an_answer_names_its_bound() {
          a leaf"
     );
     let listed = [
-        "act.rs: GestureWire",
-        "act.rs: RegionEntry",
-        "act.rs: RegionWire",
-        "act.rs: Reply",
         "alphabet.rs: Mark",
         "alphabet.rs: Role",
         "bounded.rs: AttributeName",
@@ -1725,6 +1724,10 @@ fn every_field_of_an_answer_names_its_bound() {
         "owner/given.rs: Run",
         "owner/given.rs: Wire",
         "owner/given.rs: WireLink",
+        "shape_ask.rs: GestureWire",
+        "shape_ask.rs: RegionEntry",
+        "shape_ask.rs: RegionWire",
+        "shape_ask.rs: Reply",
         "shapes.rs: CreateStep",
         "shapes.rs: EditStep",
         "shapes.rs: RebindStep",
@@ -1835,4 +1838,249 @@ fn the_answer_scan_finds_a_bare_field_and_follows_every_kind_of_field() {
             "root.rs: Wire.s: Box<[u8]>: a slice or an array",
         ]
     );
+}
+
+/// The engine's modules by path from its root (`owner::markdown`), each with its code, tests
+/// left out. `lib.rs`, the root itself, only declares them.
+fn engine_modules() -> Vec<(String, String)> {
+    let module = |(file, code): (String, String)| {
+        let path = file.trim_end_matches(".rs").trim_end_matches("/mod");
+        (path.replace('/', "::"), code)
+    };
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../engine/src");
+    let files = files_under(&src).into_iter();
+    files
+        .filter(|(file, _)| file != "lib.rs")
+        .map(module)
+        .collect()
+}
+
+/// Every path in `rest`, which follows `at`'s `::`, spelled out from the crate's root: a
+/// group gives one path an entry, `self` stays and `super` goes up.
+fn spell_paths(at: &[String], rest: &str, out: &mut Vec<Vec<String>>) {
+    for entry in entries(rest) {
+        let entry = entry.trim_start();
+        let word = |c: &char| c.is_alphanumeric() || *c == '_';
+        let name: String = entry.chars().take_while(word).collect();
+        let mut path = at.to_vec();
+        match name.as_str() {
+            "" | "self" => {}
+            "super" => _ = path.pop(),
+            _ => path.push(name.clone()),
+        }
+        match entry[name.len()..].strip_prefix("::") {
+            Some(rest) => spell_paths(&path, rest, out),
+            None => out.push(path),
+        }
+    }
+}
+
+/// The modules each of `modules` names: through `crate::`, `super::`, `self::` or the name
+/// of one of its own (`mod walk;`, then `walk::…`), each as the module the path is in. A
+/// module naming itself, or one it is inside, isn't counted, so a cycle within one module's
+/// tree doesn't show.
+fn module_edges(modules: &[(&str, &str)]) -> BTreeMap<String, BTreeSet<String>> {
+    let known: BTreeSet<&str> = modules.iter().map(|(module, _)| *module).collect();
+    let in_module = |path: &[String]| {
+        let prefixes = (1..=path.len()).rev().map(|n| path[..n].join("::"));
+        prefixes.into_iter().find(|p| known.contains(p.as_str()))
+    };
+    let mut edges = BTreeMap::new();
+    for (module, code) in modules {
+        let here: Vec<String> = module.split("::").map(String::from).collect();
+        let mut starts = vec![
+            ("crate".to_string(), Vec::new()),
+            ("self".to_string(), here.clone()),
+            ("super".to_string(), here[..here.len() - 1].to_vec()),
+        ];
+        let own = format!("{module}::");
+        for child in known.iter().filter_map(|k| k.strip_prefix(&own)) {
+            if !child.contains("::") {
+                starts.push((
+                    child.to_string(),
+                    [&here[..], &[child.to_string()]].concat(),
+                ));
+            }
+        }
+        let mut paths = Vec::new();
+        for (name, at) in &starts {
+            for rest in paths_from(code, name, true) {
+                spell_paths(at, rest, &mut paths);
+            }
+        }
+        let inside = |target: &String| module.starts_with(&format!("{target}::"));
+        let named = paths.iter().filter_map(|path| in_module(path));
+        let named = named.filter(|target| target != module && !inside(target));
+        edges.insert(module.to_string(), named.collect());
+    }
+    edges
+}
+
+/// Every module `from` leads to, itself left out unless a cycle leads back.
+fn leads_to(edges: &BTreeMap<String, BTreeSet<String>>, from: &str) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut next: Vec<&String> = edges[from].iter().collect();
+    while let Some(module) = next.pop() {
+        if seen.insert(module.clone()) {
+            next.extend(&edges[module]);
+        }
+    }
+    seen
+}
+
+/// `a <-> b` for every two modules that name each other, sorted.
+fn two_way(edges: &BTreeMap<String, BTreeSet<String>>) -> Vec<String> {
+    let mut pairs = Vec::new();
+    for (a, named) in edges {
+        let back = named.iter().filter(|b| a < *b && edges[*b].contains(a));
+        pairs.extend(back.map(|b| format!("{a} <-> {b}")));
+    }
+    pairs
+}
+
+/// Every module a cycle goes through, sorted.
+fn in_a_cycle(edges: &BTreeMap<String, BTreeSet<String>>) -> Vec<String> {
+    let cycles = |module: &&String| leads_to(edges, module).contains(*module);
+    edges.keys().filter(cycles).cloned().collect()
+}
+
+/// Whether `from`, or a module inside it, names `to` or a module inside it.
+fn names(edges: &BTreeMap<String, BTreeSet<String>>, from: &str, to: &str) -> bool {
+    let is = |module: &str, of: &str| module == of || module.starts_with(&format!("{of}::"));
+    let mut from = edges.iter().filter(|(module, _)| is(module, from));
+    from.any(|(_, named)| named.iter().any(|module| is(module, to)))
+}
+
+/// What to do about a cycle that is found and not listed.
+const CUT_IT: &str = "move what both sides need into a module below them (track C, #271)";
+
+/// The engine's modules that name each other, as `two_way` gives them. Each is a cycle of
+/// two; C4 (#271) took `act <-> bind`, `act <-> core` and `gateway <-> owner::markdown` off.
+const TWO_WAY: [&str; 15] = [
+    "configured <-> types",
+    "cst <-> markdown",
+    "cst::block <-> cst::inline",
+    "daily <-> templates",
+    "files <-> rename",
+    "frontmatter <-> style",
+    "index <-> resolver",
+    "items <-> owner::markdown",
+    "owner <-> workspace",
+    "owner::answer <-> owner::given",
+    "owner::given <-> workspace",
+    "owner::markdown <-> rename",
+    "owner::markdown <-> style",
+    "owner::markdown <-> workspace",
+    "style <-> workspace",
+];
+
+/// The engine's modules that are in a cycle, as `in_a_cycle` gives them.
+const IN_A_CYCLE: [&str; 36] = [
+    "configured",
+    "cst",
+    "cst::block",
+    "cst::inline",
+    "daily",
+    "edit",
+    "files",
+    "frontmatter",
+    "gateway",
+    "index",
+    "items",
+    "markdown",
+    "matcher",
+    "matcher::piece",
+    "owner",
+    "owner::answer",
+    "owner::canvas",
+    "owner::change",
+    "owner::given",
+    "owner::markdown",
+    "owner::markdown::anchor",
+    "owner::markdown::walk",
+    "owner::markdown::walk::block_text",
+    "owner::markdown::walk::ids",
+    "owner::markdown::walk::keys",
+    "owner::markdown::walk::typed",
+    "rename",
+    "resolver",
+    "shapes",
+    "shows",
+    "style",
+    "tasks",
+    "templates",
+    "trash",
+    "types",
+    "workspace",
+];
+
+#[test]
+fn the_engine_modules_are_in_only_these_cycles() {
+    let modules = engine_modules();
+    let modules: Vec<(&str, &str)> = (modules.iter())
+        .map(|(module, code)| (module.as_str(), code.as_str()))
+        .collect();
+    let edges = module_edges(&modules);
+    for module in ["act", "bind", "core", "gateway", "owner", "shape_ask"] {
+        assert!(
+            edges.contains_key(module),
+            "the engine has no module {module}"
+        );
+    }
+    for from in ["core", "bind", "shape_ask"] {
+        assert!(!names(&edges, from, "act"), "{from} names act: {CUT_IT}");
+    }
+    for to in ["core", "bind"] {
+        assert!(
+            !names(&edges, "shape_ask", to),
+            "shape_ask names {to}: {CUT_IT}"
+        );
+    }
+    assert!(
+        !names(&edges, "gateway", "owner"),
+        "gateway names an owner: {CUT_IT}"
+    );
+    let what = "engine modules that name each other";
+    only_listed(what, CUT_IT, &two_way(&edges), &TWO_WAY);
+    let what = "engine modules in a cycle";
+    only_listed(what, CUT_IT, &in_a_cycle(&edges), &IN_A_CYCLE);
+}
+
+#[test]
+fn the_module_scan_reads_crate_super_self_and_a_modules_own() {
+    let modules = [
+        (
+            "a",
+            "use crate::{b::{self, Thing}, c};\nmod walk;\nfn f() { walk::go(); }",
+        ),
+        (
+            "a::walk",
+            "use super::super::d::X;\nuse super::Y;\nfn w() { self::w() }",
+        ),
+        ("b", "fn g() { crate::a::walk::go(); self::h(); }"),
+        ("c", "use crate::cc::Z;\nuse crate::a::*;"),
+        ("d", "use crate::a;\nfn x() { other::walk::go(); b::go(); }"),
+        ("e", "use crate::a::Thing;"),
+    ];
+    let edges = module_edges(&modules);
+    let mut found = Vec::new();
+    for (from, to) in &edges {
+        found.extend(to.iter().map(|to| format!("{from} -> {to}")));
+    }
+    assert_eq!(
+        found,
+        [
+            "a -> a::walk",
+            "a -> b",
+            "a -> c",
+            "a::walk -> d",
+            "b -> a::walk",
+            "c -> a",
+            "d -> a",
+            "e -> a"
+        ]
+    );
+    assert_eq!(two_way(&edges), ["a <-> c"]);
+    assert_eq!(in_a_cycle(&edges), ["a", "a::walk", "b", "c", "d"]);
+    assert!(names(&edges, "a", "d") && !names(&edges, "e", "b"));
 }

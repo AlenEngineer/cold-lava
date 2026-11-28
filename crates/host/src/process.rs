@@ -16,10 +16,10 @@ use super::view::ViewNews;
 use super::{
     CommandRequest, EditorRequest, Extension, FileNews, FilePreview, Host, Manifest, PaneNews,
 };
-use crate::act::Ask;
 use crate::gateway::{self, Edited, News, SubId, Ticket};
 use crate::owner::cache::FileRead;
 use crate::owner::edits::{FileEdit, NewText};
+use crate::shape_ask::Ask;
 
 /// At most this many messages are read from one extension per frame; the rest wait for the next.
 const PER_POLL: usize = 64;
@@ -590,7 +590,7 @@ mod tests {
             assert_eq!(says(&e), kept(message));
         }
         // An answer to a shape that is neither form says what the two are.
-        let neither = serde_json::from_value::<crate::act::Reply>(json!({"nothing": 1}));
+        let neither = serde_json::from_value::<crate::shape_ask::Reply>(json!({"nothing": 1}));
         assert_eq!(
             says(&neither.unwrap_err()),
             kept("an answer to shape/region has items, and an answer to shape/gesture has do")
@@ -932,7 +932,7 @@ mod tests {
 
     #[test]
     fn a_shape_ask_goes_over_json_rpc_and_its_answer_comes_back() {
-        use crate::act::{Answered, Gesture};
+        use crate::shape_ask::{Answered, Gesture};
         static SHAPES: Scripted = Scripted(|m| {
             Some(
                 match (m["method"].as_str(), m["params"]["region"].as_str()) {
@@ -962,11 +962,11 @@ mod tests {
         let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut r = scripted(&SHAPES, &dir, None);
         r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
-        let data = crate::act::InputData {
+        let data = crate::shape_ask::InputData {
             title: "tasks".into(),
             members: Vec::new(),
         };
-        let inputs: crate::act::Inputs = [("a".to_string(), data)].into_iter().collect();
+        let inputs: crate::shape_ask::Inputs = [("a".to_string(), data)].into_iter().collect();
         let region = |name: &str| Ask::Region {
             placed: 1,
             shape: "fake.tally".into(),
@@ -993,7 +993,7 @@ mod tests {
                 (
                     "shape/region",
                     Ok(Answered::Region {
-                        items: vec![crate::bind::Entry {
+                        items: vec![crate::shows::Entry {
                             id: String::new(),
                             label: "0 items".into()
                         }]

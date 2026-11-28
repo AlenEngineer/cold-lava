@@ -1,7 +1,8 @@
 //! The reader of what another program answers, beside the types it reads into
-//! (`owner::given`, `act::Reply`): which of serde's words may be shown (`said`), each item of
-//! an owner's answer read on its own by its keys (`Kept`, `GivenItem::read`), a run read by its
-//! keys (`Run`'s `Deserialize`), and what is kept of an item that didn't read (`LeftOut`).
+//! (`owner::given`, `shape_ask::Reply`): which of serde's words may be shown (`said`), each
+//! item of an owner's answer read on its own by its keys (`Kept`, `GivenItem::read`), a run
+//! read by its keys (`Run`'s `Deserialize`), and what is kept of an item that didn't read
+//! (`LeftOut`).
 //!
 //! A value past its bound is refused by the bounded types as it is read (`crate::bounded`);
 //! here an item that holds one, or that doesn't read for any other reason, is left out alone

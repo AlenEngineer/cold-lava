@@ -48,8 +48,8 @@ mod words;
 use cold_lava_engine::{
     act, bind, configured, core, daily, edit, files, frontmatter, gateway, index, items,
     json_canvas, links, markdown, merge, origin, owner, paths, problem, read, recipe, rel_path,
-    rename, resolver, search, shapes, sources, style, tasks, templates, tidy, trash, types,
-    workspace, write,
+    rename, resolver, search, shape_ask, shapes, shows, sources, style, tasks, templates, tidy,
+    trash, types, workspace, write,
 };
 
 use anyhow::Result;
@@ -1172,7 +1172,7 @@ fn bound_shape(
     let mut binding = bind::Binding::new(&mut core, found, id, sources).map_err(|e| anyhow!(e))?;
     let mut done = None;
     if let Some(g) = args.values.get("do") {
-        let gesture = act::Gesture::parse(g).map_err(|e| anyhow!("--do {e}"))?;
+        let gesture = shape_ask::Gesture::parse(g).map_err(|e| anyhow!("--do {e}"))?;
         let ext = binding.extension().map(String::from);
         let refused = |e: gateway::Error| anyhow!("--do: {e}");
         let acted = match &ext {
@@ -1183,14 +1183,16 @@ fn bound_shape(
         };
         let ran = match (acted.map_err(refused)?, &ext) {
             (act::Acted::Ran(d), _) => d,
-            (act::Acted::Ask(ask), Some(name)) => match owners
-                .ask_shape(&mut core, found, name, ask)?
-            {
-                act::Answered::Gesture { steps } => owners
-                    .as_extension(&mut core, name, |host| binding.run(host, &gesture, &steps))?
-                    .map_err(refused)?,
-                act::Answered::Region { .. } => unreachable!("the core checks the answer's form"),
-            },
+            (act::Acted::Ask(ask), Some(name)) => {
+                match owners.ask_shape(&mut core, found, name, ask)? {
+                    shape_ask::Answered::Gesture { steps } => owners
+                        .as_extension(&mut core, name, |host| binding.run(host, &gesture, &steps))?
+                        .map_err(refused)?,
+                    shape_ask::Answered::Region { .. } => {
+                        unreachable!("the core checks the answer's form")
+                    }
+                }
+            }
             (act::Acted::Ask(_), None) => unreachable!("only an extension's shape asks"),
         };
         for (owner, news) in core.take_item_news() {
@@ -1225,12 +1227,12 @@ fn bound_shape(
     }
     if let Some(name) = binding.extension().map(String::from) {
         for ask in binding.region_asks(0) {
-            let act::Ask::Region { region, .. } = &ask else {
+            let shape_ask::Ask::Region { region, .. } = &ask else {
                 continue;
             };
             let region = region.clone();
             match owners.ask_shape(&mut core, found, &name, ask) {
-                Ok(act::Answered::Region { items }) => binding.answered(&region, items),
+                Ok(shape_ask::Answered::Region { items }) => binding.answered(&region, items),
                 Ok(_) => {}
                 Err(e) => problem!("{e}"),
             }
