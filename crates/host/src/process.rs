@@ -1098,7 +1098,7 @@ mod tests {
         let dir = workspace("shape-crash");
         let log = dir.join("fake.log");
         std::fs::write(&log, "Traceback: ZeroDivisionError\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut r = scripted(&CRASH, &dir, Some(log));
         r.call(ExtId(0), Some(&mut core), |e, h| e.workspace(Some(&dir), h));
         let ask = Ask::Region {
