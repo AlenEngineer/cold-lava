@@ -1286,7 +1286,8 @@ impl Home {
     }
 
     /// `workspace/open`: the note at `note` (inside the workspace, absolute or relative to it),
-    /// at `line`, from where you are.
+    /// at `line`, from where you are. The path is read as the gateway reads one
+    /// (`files::resolve`), so no hidden folder and no symlink.
     fn open_for(&mut self, ext: ExtId, note: &Path, line: Option<usize>, item: Option<String>) {
         let Some(root) = self.root.clone() else {
             return;
@@ -1294,10 +1295,16 @@ impl Home {
         if let Some(why) = self.unsaved_in_front() {
             return self.held_back(ext, &format!("open {}", note.display()), why);
         }
-        let owned = self.core.as_ref().and_then(|c| {
-            let rel = rel_path::or_whole(c.root(), note);
-            (c.index.workspace.owned.iter()).find(|f| f.rel == rel)
-        });
+        let rel = rel_path::or_whole(&root, note);
+        let path = match files::resolve(&root, &rel) {
+            Ok(path) => path,
+            Err(e) => {
+                let name = &self.registry.manifest(ext).name;
+                return self.flash(format!("{name} asked to open {}", e.message));
+            }
+        };
+        let owned = (self.core.as_ref())
+            .and_then(|c| (c.index.workspace.owned.iter()).find(|f| f.rel == rel));
         if let Some(f) = owned {
             let place = item.and_then(|id| f.places.get(&id).cloned());
             let path = f.path.clone();
@@ -1307,12 +1314,7 @@ impl Home {
             }
             return self.open_file_at(&path, place);
         }
-        let path = root.join(note);
-        let inside = match (path.canonicalize(), root.canonicalize()) {
-            (Ok(p), Ok(r)) => p.starts_with(r) && p.is_file(),
-            _ => false,
-        };
-        if !inside {
+        if !path.is_file() {
             let name = &self.registry.manifest(ext).name;
             let note = note.display();
             return self.flash(format!(
