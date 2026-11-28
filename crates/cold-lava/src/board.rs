@@ -3891,6 +3891,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Another program saves the canvas by emptying the file and writing it again (#441). The
+    /// board, seeing it empty in between, keeps its cards and the selection, so the next
+    /// colour key lands.
+    #[test]
+    fn a_canvas_rewritten_in_place_keeps_the_selected_card() {
+        let (dir, path, mut core) = workspace(
+            "board-rewritten-in-place",
+            vec![card("a", 0, "A"), card("b", 300, "B")],
+        );
+        let mut registry = Registry::empty();
+        let mut b = Board::open(&dir, path.clone(), Some("a".into())).unwrap();
+        b.set_color(Some("1"));
+        let mut theirs = on_disk(&path);
+
+        let changed = [CoreEvent::BoardChanged("B.canvas".into())];
+        std::fs::write(&path, "").unwrap();
+        b.noticed(&core, &changed);
+        b.tick(&mut core, &mut registry);
+        assert_eq!(b.selected(), Some("a"));
+        assert_eq!(b.doc.nodes.len(), 2, "an empty file is one being written");
+        b.set_color(Some("2"));
+
+        theirs["nodes"][1]["x"] = json!(600);
+        std::fs::write(&path, theirs.to_string()).unwrap();
+        b.noticed(&core, &changed);
+        b.tick(&mut core, &mut registry);
+        assert_eq!(b.selected(), Some("a"));
+        b.set_color(Some("3"));
+
+        let saved = on_disk(&path);
+        assert_eq!(saved["nodes"][0]["color"], "3");
+        assert_eq!(saved["nodes"][1]["x"], 600);
+        assert!(!b.unsaved);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_board_saved_through_a_symlink_lands_in_the_canvas_it_leads_to() {
