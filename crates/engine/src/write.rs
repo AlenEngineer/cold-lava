@@ -21,6 +21,11 @@ use std::path::{Path, PathBuf};
 use name::{beside, reserved};
 
 pub(crate) use kept::kept_for;
+
+/// Whether `name` is a staged write's (`name::staged_for`), live or left by a killed save.
+pub(crate) fn is_staged(name: &str) -> bool {
+    name::staged_for(name).is_some()
+}
 pub use kept::{Outside, find as find_kept};
 
 #[derive(Debug)]

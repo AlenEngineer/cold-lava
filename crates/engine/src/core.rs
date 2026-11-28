@@ -141,7 +141,8 @@ pub struct Core {
     /// The system trash deletes go to, when the workspace's `trashOption` names it.
     system_trash: Option<Bin>,
     /// The texts kept outside their files (`files::kept`), listed again when the watcher hears
-    /// a kept name (`kept_heard`), on a rescan and after the core's own delete or restore.
+    /// a kept name or a listed leftover's (`kept_heard`), on a rescan and after the core's own
+    /// delete or restore.
     kept: files::KeptTexts,
     kept_heard: bool,
 }
@@ -804,7 +805,7 @@ impl Core {
                 Err(_) => Vec::new(),
             },
             Kind::Kept => self.kept_again().into_iter().collect(),
-            Kind::GraphSettings | Kind::Ignored => Vec::new(),
+            Kind::GraphSettings | Kind::Staged | Kind::Ignored => Vec::new(),
         }
     }
 
@@ -957,6 +958,13 @@ impl Core {
                 }
                 Kind::GraphSettings => self.graph_settings = true,
                 Kind::Kept => self.kept_heard = true,
+                // Every save stages one: only a leftover the core lists is news.
+                Kind::Staged => {
+                    let root = &self.index.workspace.root;
+                    if self.kept.kept.iter().any(|k| root.join(&k.kept) == p) {
+                        self.kept_heard = true;
+                    }
+                }
                 Kind::Folder => self.rescan = true,
                 Kind::Ignored => {}
             }
