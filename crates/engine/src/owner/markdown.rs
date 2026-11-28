@@ -21,6 +21,9 @@ use std::ops::Range;
 
 mod anchor;
 pub mod attributes;
+mod walk;
+
+pub use walk::items;
 
 /// What reading a note gives besides its items, which are read on first use (`items`).
 pub struct Read {
@@ -42,11 +45,6 @@ pub fn read(text: &str) -> Read {
         aliases,
         written,
     }
-}
-
-/// The items of the note at workspace-relative `note` (with `.md`) whose text is `text`.
-pub fn items(note: &str, text: &str, s: &Settings) -> Vec<Item> {
-    items::extract(note, text, s)
 }
 
 /// The `checkbox` attribute of an item whose text (its first line, without its list marker) is

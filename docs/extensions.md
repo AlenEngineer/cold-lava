@@ -120,7 +120,7 @@ then a query and a view, not a parser of its own.
   one comes or goes, the next takes its address. A twin whose lines another twin has too hashes
   how many twins there are as well, and, under a twin, which twin it is under, so an edit held by
   an address another twin took is refused as `changed` and doesn't land on it
-  (`items/twins.rs`, #327). Two limits: a change that keeps the count and the lines keeps the
+  (`owner/markdown/walk/twins.rs`, #327). Two limits: a change that keeps the count and the lines keeps the
   revs, so twins with the same lines and different items under them, moved past each other,
   swap addresses unrefused (an anchor is what holds one item); and an edit to one twin changes
   the revs of the twins with its lines, so a client that edits two of them reads again between
@@ -287,7 +287,7 @@ alone. "Anchor" also names a shape's attach points (docs/shapes.md); here it is 
   when the item had an anchor already and nothing was written, so asking twice writes nothing,
   and `next` is null. `ItemEdited` says "anchored" and names who asked. `cold_lava.py` has
   `anchor(item)`.
-- **Where it goes.** Where the walk reads an item's anchor (`items.rs`): at the end of its last
+- **Where it goes.** Where the walk reads an item's anchor (`owner/markdown/walk.rs`): at the end of its last
   own line, which for a list item or a task is the line before its first child, and for a
   paragraph a type reads is its last line. After every field, so a Tasks or Dataview date stays
   where it was, with one space before it; the blanks and the line ending that close the line
