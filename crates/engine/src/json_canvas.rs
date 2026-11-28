@@ -85,9 +85,18 @@ fn round<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_i64(v.round() as i64)
 }
 
-/// Read a canvas file. An empty one is an empty canvas.
+/// Whether a canvas file's bytes are blank: nothing in them but whitespace. Opened, a blank
+/// file is an empty canvas (`parse`). In place of one already read, it may be a program that
+/// rewrites the file in place, caught between emptying and writing it: a reader that merges
+/// it into work it holds waits before taking it as a canvas with no cards (the board's
+/// `read_version`).
+pub fn is_blank(bytes: &[u8]) -> bool {
+    bytes.iter().all(u8::is_ascii_whitespace)
+}
+
+/// Read a canvas file. A blank one is an empty canvas (`is_blank`).
 pub fn parse(bytes: &[u8]) -> serde_json::Result<Doc> {
-    if bytes.iter().all(u8::is_ascii_whitespace) {
+    if is_blank(bytes) {
         return Ok(Doc::default());
     }
     serde_json::from_slice(bytes)

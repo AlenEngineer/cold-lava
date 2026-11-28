@@ -44,6 +44,10 @@ use crate::json_canvas::{CEdge, CNode, Doc};
 
 /// How long a message stays in the status line.
 const MESSAGE_SHOWS: Duration = Duration::from_secs(3);
+/// How long a canvas file stays blank, unmodified, before the board takes it in as a canvas
+/// with no cards (`read_version`): longer than a program takes to rewrite a file in place,
+/// shorter than the 2 s the board waits between looks at the file, so the next look takes it.
+const BLANK_SETTLES: Duration = Duration::from_secs(1);
 
 fn new_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -260,6 +264,9 @@ pub struct Board {
     /// The core said the file changed, and it hasn't been read since.
     stale: bool,
     last_check: Instant,
+    /// The file was found blank in place of the canvas last read: when it was modified and
+    /// when that was first seen (`read_version`).
+    blank: Option<(SystemTime, Instant)>,
     keys: Keymap<BoardAction>,
     /// Inside the main menu: where Back and Forward lead, and their keys.
     nav: Option<(Nav, Keymap<HistoryAction>)>,
@@ -493,6 +500,7 @@ impl Board {
             rel,
             stale: false,
             last_check: Instant::now(),
+            blank: None,
             keys: Keymap::new(commands::BOARD),
             nav: None,
         })
@@ -1164,22 +1172,7 @@ impl Board {
     /// If the file holds a change made elsewhere, merge it into ours.
     /// Returns true when something was merged in.
     fn sync_from_disk(&mut self) -> bool {
-        let Ok(bytes) = std::fs::read(&self.path) else {
-            return false;
-        };
-        // Most checks find the bytes the board last read or wrote, which `take_in` would find
-        // nothing new in: they aren't parsed again.
-        if bytes == self.disk {
-            return false;
-        }
-        // A half-written file fails to parse; we'll catch the complete one on the next check.
-        // An empty one parses as a canvas with no cards, but is a program that rewrites the
-        // file in place caught between emptying and writing it: merged, it would take away
-        // every card and the selection with them (#441).
-        if bytes.iter().all(u8::is_ascii_whitespace) {
-            return false;
-        }
-        let Ok((theirs, twins)) = parse(&bytes, &self.path) else {
+        let Some((bytes, theirs, twins)) = self.read_version() else {
             return false;
         };
         let Some(base) = self.take_in(bytes, &theirs, twins) else {
@@ -1228,6 +1221,39 @@ impl Board {
             ));
         }
         true
+    }
+
+    /// The file's version, when it holds one the board hasn't taken in yet: its bytes, the
+    /// canvas in them and their twins. Most checks find the bytes the board last read or
+    /// wrote, which aren't parsed again. A half-written file fails to parse, and the complete
+    /// one is caught on the next check. A blank one parses as a canvas with no cards, but is
+    /// most often a program that rewrites the file in place, caught between emptying and
+    /// writing it: merged, it would take away every card and the selection with them (#441).
+    /// So it is taken in only once it has stayed blank, unmodified, for `BLANK_SETTLES`.
+    fn read_version(&mut self) -> Option<(Vec<u8>, Doc, Vec<(String, String)>)> {
+        let bytes = std::fs::read(&self.path).ok()?;
+        if bytes == self.disk {
+            return None;
+        }
+        if !crate::json_canvas::is_blank(&bytes) {
+            self.blank = None;
+        } else {
+            let modified = std::fs::metadata(&self.path)
+                .and_then(|m| m.modified())
+                .ok()?;
+            match self.blank {
+                Some((m, since)) if m == modified && since.elapsed() >= BLANK_SETTLES => {
+                    self.blank = None;
+                }
+                Some((m, _)) if m == modified => return None,
+                _ => {
+                    self.blank = Some((modified, Instant::now()));
+                    return None;
+                }
+            }
+        }
+        let (theirs, twins) = parse(&bytes, &self.path).ok()?;
+        Some((bytes, theirs, twins))
     }
 
     /// Takes in the file's version, just read, the one place an open board does: the `bytes`,
@@ -1302,6 +1328,11 @@ impl Board {
             Err(e) => {
                 self.unsaved = true;
                 match crate::gateway::Reason::of(&e) {
+                    crate::gateway::Reason::Changed if self.blank.is_some() => self.flash(
+                        "not saved yet: the file is empty on disk, as while another program \
+                         writes it. Your edits are kept, and merged and saved once it is written \
+                         or has stayed empty a moment",
+                    ),
                     crate::gateway::Reason::Changed => self.flash(
                         "not saved: the file changed on disk and can't be read yet. Your edits \
                          are kept and saved once it can",
@@ -3929,6 +3960,33 @@ mod tests {
         let saved = on_disk(&path);
         assert_eq!(saved["nodes"][0]["color"], "3");
         assert_eq!(saved["nodes"][1]["x"], 600);
+        assert!(!b.unsaved);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A canvas emptied for good is taken in once it has stayed blank: the cards the board
+    /// didn't change go, and its edits save again.
+    #[test]
+    fn a_canvas_that_stays_empty_is_taken_in() {
+        let (dir, path, _core) = workspace(
+            "board-stays-empty",
+            vec![card("a", 0, "A"), card("b", 300, "B")],
+        );
+        let mut b = Board::open(&dir, path.clone(), Some("a".into())).unwrap();
+        std::fs::write(&path, "").unwrap();
+        assert!(!b.sync_from_disk());
+        b.set_color(Some("1"));
+        assert!(b.unsaved, "not over a file that may be being written");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+
+        let (_, since) = b.blank.as_mut().expect("seen blank");
+        *since = since.checked_sub(BLANK_SETTLES).unwrap();
+        assert!(b.sync_from_disk());
+        assert_eq!(b.selected(), Some("a"));
+        b.set_color(Some("2"));
+        let saved = on_disk(&path);
+        assert_eq!(ids(&saved, "nodes"), ["a"]);
+        assert_eq!(saved["nodes"][0]["color"], "2");
         assert!(!b.unsaved);
         let _ = std::fs::remove_dir_all(dir);
     }
