@@ -6,7 +6,6 @@
 //! the plugin does, by the plugin's settings (`tasks_settings.rs`: global filter, statuses, "set
 //! done date", "next recurrence on the line below"): done dates, recurrence and status cycles.
 
-use crate::configured::Configured;
 use crate::daily;
 use crate::identity::line_id;
 use crate::items::{self, Data, Item};
@@ -320,65 +319,6 @@ impl std::fmt::Display for Changed {
     }
 }
 impl std::error::Error for Changed {}
-
-/// Toggle the task at `path:line` (1-based) like Obsidian Tasks does, and write the file over
-/// the text read (`Seen::replace`): `toggle_text` on the file's text, in the workspace the file
-/// is in.
-pub fn toggle(
-    path: &Path,
-    configured: &Configured,
-    line: usize,
-    expect_id: Option<&str>,
-    today: NaiveDate,
-) -> Result<Toggled> {
-    toggle_in(
-        &crate::workspace::find_workspace_root(path),
-        configured,
-        path,
-        line,
-        expect_id,
-        today,
-    )
-}
-
-/// [`toggle`] in a workspace already found (`workspace::locate_workspace`), read with what the
-/// frontend `configured`.
-pub fn toggle_in(
-    root: &Path,
-    configured: &Configured,
-    path: &Path,
-    line: usize,
-    expect_id: Option<&str>,
-    today: NaiveDate,
-) -> Result<Toggled> {
-    let root = root.to_path_buf();
-    let path = path
-        .canonicalize()
-        .with_context(|| format!("no such file: {}", path.display()))?;
-    let item_settings = items::Settings::load(&root, configured);
-    let style = crate::style::Lazy::new(|| crate::style::Style::of_root(&root, &configured.style));
-    let rel = path
-        .strip_prefix(&root)
-        .unwrap_or(&path)
-        .to_string_lossy()
-        .replace('\\', "/");
-    let text = std::fs::read_to_string(&path)?;
-    let shown = path.to_string_lossy();
-    let t = toggle_text(
-        &shown,
-        &rel,
-        &text,
-        &item_settings,
-        &style,
-        line,
-        expect_id,
-        today,
-    )?;
-    crate::read::Seen::kept(&path, text.as_bytes())
-        .replace(t.text.as_bytes())
-        .map_err(|e| crate::edit::EditError::written(e, &root))?;
-    Ok(t)
-}
 
 /// Toggle the task at `line` (1-based) of `text`, the note at workspace-relative `rel` (named
 /// `shown` in messages), like Obsidian Tasks does: to the status's next symbol, with a done date
@@ -849,6 +789,30 @@ mod tests {
             Some(d("2026-11-09"))
         );
         assert_eq!(advance(b, "every blue moon"), None);
+    }
+
+    /// `toggle_text` on the note at `path` in the workspace it is in, its new text written
+    /// over it: what a tick does to a file, for the tests below.
+    fn toggle(
+        path: &Path,
+        configured: &crate::configured::Configured,
+        line: usize,
+        expect_id: Option<&str>,
+        today: NaiveDate,
+    ) -> Result<Toggled> {
+        let path = &path.canonicalize()?;
+        let root = crate::workspace::find_workspace_root(path);
+        let rel = path.strip_prefix(&root)?.to_string_lossy();
+        let text = std::fs::read_to_string(path)?;
+        let settings = items::Settings::load(&root, configured);
+        let style =
+            crate::style::Lazy::new(|| crate::style::Style::of_root(&root, &configured.style));
+        let shown = path.to_string_lossy();
+        let t = toggle_text(
+            &shown, &rel, &text, &settings, &style, line, expect_id, today,
+        )?;
+        std::fs::write(path, &t.text)?;
+        Ok(t)
     }
 
     fn temp_workspace(name: &str) -> PathBuf {

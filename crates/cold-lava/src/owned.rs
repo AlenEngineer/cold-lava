@@ -1,13 +1,18 @@
-//! Files extensions own, from the command line, which has no menu to run the extensions: reads
-//! come from what the owners gave before (their cache), and a rename starts the owners it needs
-//! and waits for them.
+//! The command line's way into a workspace, which has no menu to run the extensions: the
+//! workspace is opened once, as a core that knows who owns which kind of file; reads come from
+//! what the owners gave before (their cache); an item edit goes through the core, and a rename
+//! or an edit of a file another owner reads starts the owners it needs and waits for them.
 
 use crate::act::{Answered, Ask};
 use crate::core::{Applying, Core, NotApplied, Planned};
+use crate::edit::EditError;
 use crate::ext::{Effect, ExtId, Registry};
-use crate::gateway::{Answer, Edit, Edited, Error, Op, Reason};
+use crate::gateway::{self, Answer, Edit, Edited, Error, Op, Reason};
+use crate::index::Index;
+use crate::items::{Data, Item};
+use crate::tasks::{NextTask, StatusType, Toggled};
 use crate::{paths, workspace};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -23,29 +28,32 @@ pub fn open(root: &Path, registry: &Registry) -> Result<Core> {
     Ok(core)
 }
 
-/// The workspace at `root` with the owned files whose owners gave something for them as they
-/// are now. Each one left out is named on stderr, and so is what didn't read in what an
-/// owner gave (a board's card left out), as the menu's status line says it.
-pub fn workspace(root: &Path, registry: &Registry) -> Result<workspace::Workspace> {
-    let workspace = match registry.owned_kinds().is_empty() {
-        true => workspace::scan(root, crate::config::configured())?,
-        false => {
-            let core = open(root, registry)?;
-            for (owner, path) in core.unread() {
-                crate::say::problem!(
-                    "{path} is left out: {owner} hasn't read it as it is now (open the workspace \
-                     in cold-lava, and {owner} reads it)"
-                );
-            }
-            core.index.workspace
-        }
-    };
-    for f in &workspace.owned {
+/// The workspace at `root` as the core reads it (`open`), for a command that reads no owned
+/// file (`search`, `style`).
+pub fn index(root: &Path, registry: &Registry) -> Result<Index> {
+    Ok(open(root, registry)?.index)
+}
+
+/// The workspace at `root` as the core reads it, for a command that reads the owned files
+/// too. Each one left out is named on stderr, and so is what didn't read in what an owner
+/// gave (a board's card left out), as the menu's status line says it.
+pub fn index_with_owned(root: &Path, registry: &Registry) -> Result<Index> {
+    let core = open(root, registry)?;
+    for (owner, path) in core.unread() {
+        crate::say::problem!("{}", left_out(owner, path));
+    }
+    let index = core.index;
+    for f in &index.workspace.owned {
         if let Some(message) = f.trouble() {
             crate::say::problem!("{}", couldnt_read(&f.owner, &f.rel, &message));
         }
     }
-    Ok(workspace)
+    Ok(index)
+}
+
+/// `index_with_owned`'s workspace.
+pub fn workspace(root: &Path, registry: &Registry) -> Result<workspace::Workspace> {
+    Ok(index_with_owned(root, registry)?.workspace)
 }
 
 /// What the status line and stderr say when `owner` couldn't read its file at `path`
@@ -55,69 +63,172 @@ pub fn couldnt_read(owner: &str, path: &str, message: &str) -> String {
     format!("{owner} couldn't read {path}: {message}")
 }
 
-/// The owner of the file at workspace-relative `rel`, when it isn't a note: the engine's
-/// built-in one (a canvas) or an installed extension.
-pub fn owner_of(registry: &Registry, rel: &str) -> Option<String> {
-    let built_in = crate::owner::built_in(rel).map(String::from);
-    built_in.or_else(|| {
-        let (ext, _) = registry.owner_of(rel)?;
-        Some(registry.manifest(ext).name.clone())
-    })
+/// Why the file at `path` shows nothing: `owner` gave nothing for it as it is now.
+fn left_out(owner: &str, path: &str) -> String {
+    format!(
+        "{path} is left out: {owner} hasn't read it as it is now (open the workspace in \
+         cold-lava, and {owner} reads it)"
+    )
 }
 
-/// `item set` on a file another owner reads: the same edit the agenda makes (`Core::edit_item`),
-/// so the owner writes it, it is read back before it is written, and it is refused if the file
-/// changed since its owner read it. An extension owner is started to answer.
-pub fn set_field(
+/// `item set`: the same edit the agenda makes (`Core::edit_item`), `op` on the item `id` of
+/// the file at workspace-relative `rel`, refused unless it is still the version `rev` when one
+/// is given. In a file another owner reads, the owner writes it, it is read back before it is
+/// written, and it is refused if the file changed since its owner read it; an extension owner
+/// is started to answer. A `dry` run writes nothing (`Core::would_edit`).
+pub fn edit(
     root: &Path,
     registry: &mut Registry,
     rel: &str,
     id: &str,
     rev: Option<&str>,
-    field: &str,
-    value: serde_json::Value,
+    op: Op,
+    dry: bool,
 ) -> Result<Edited, Error> {
     let refused = |m: String| Error::new(Reason::Refused, m);
     let mut core = open(root, registry).map_err(|e| refused(format!("{e:#}")))?;
-    let file = (core.index.workspace.owned.iter()).find(|f| f.rel == rel);
-    let Some(file) = file.filter(|f| f.rev.is_some()) else {
-        let owner = owner_of(registry, rel).unwrap_or_default();
-        return Err(refused(format!(
-            "{rel} is left out: {owner} hasn't read it as it is now (open the workspace in \
-             cold-lava, and {owner} reads it)"
-        )));
-    };
-    let item = (file.items.iter()).find(|i| i.id == id).ok_or_else(|| {
+    if let Some((owner, path)) = core.unread().find(|&(_, path)| path == rel) {
+        return Err(refused(left_out(owner, path)));
+    }
+    let Some(item) = core.item(rel, id) else {
+        // A file that doesn't read (not UTF-8 text, a hidden path) says why, not "read again".
+        core.read_file(rel)?;
         let message = format!("{rel} has no item {id}: read it again");
-        Error::new(Reason::Changed, message)
-    })?;
+        return Err(Error::new(Reason::Changed, message));
+    };
     let edit = Edit {
         id: id.to_string(),
         rev: rev.unwrap_or(&item.rev).to_string(),
-        op: Op::SetField {
-            field: field.to_string(),
-            value,
-        },
+        op,
     };
-    let ticket = match core.edit_item(BY, &edit)? {
-        Answer::Now(edited) => return Ok(*edited),
-        Answer::Later(ticket) => ticket,
-    };
-    let mut answer = None;
-    let mut take = |c: &mut Core| {
-        answer = (c.take_edited().into_iter()).find_map(|(_, t, a)| (t == ticket).then_some(a));
-        answer.is_some()
-    };
-    if !take(&mut core) {
-        Owners::new(registry, &core).serve(&mut core, take);
+    match dry {
+        true => core.would_edit(&edit),
+        false => made(&mut core, registry, rel, &edit),
     }
-    answer.unwrap_or_else(|| {
-        let message = format!("{rel}'s owner didn't answer in {} s", PATIENCE.as_secs());
-        Err(refused(message))
+}
+
+/// `task toggle`: the task at `line` (1-based) of the note `file` in the workspace at `root`,
+/// ticked the way the agenda ticks it (`Core::edit_item`), refused unless it is still the
+/// version `rev` when one is given. In a file another owner reads, a line names no task.
+pub fn toggle(
+    root: &Path,
+    registry: &mut Registry,
+    file: &Path,
+    line: usize,
+    rev: Option<&str>,
+) -> Result<Toggled> {
+    let path =
+        (file.canonicalize()).with_context(|| format!("no such file: {}", file.display()))?;
+    let rel = crate::rel_path::or_whole(root, &path);
+    let shown = path.to_string_lossy();
+    let mut core = open(root, registry)?;
+    if let Some(owner) = core.owner_of(&rel) {
+        bail!(
+            "{} is read by {owner}, not as a note, so a line doesn't name a task in it: tick it \
+             with `cold-lava item set FILE ID status x` (ids from `cold-lava items WORKSPACE \
+             task --json`)",
+            file.display()
+        );
+    }
+    let door = |e: Error| anyhow::Error::from(EditError::from(e));
+    let task = task_at(&core, &rel, line).map_err(door)?;
+    let Some(task) = task else {
+        let lines = core.read_file(&rel).map_err(door)?.text.lines().count();
+        let changed = |m: String| anyhow::Error::from(EditError::Changed(m));
+        if line == 0 || line > lines {
+            return Err(changed(format!(
+                "{shown} has no line {line} (it has {lines})"
+            )));
+        }
+        if rev.is_some() {
+            let message =
+                format!("line {line} changed since the agenda was read; refresh and try again");
+            return Err(changed(message));
+        }
+        bail!("line {line} of {shown} is not a task");
+    };
+    let edit = Edit {
+        id: task.id.clone(),
+        rev: rev.unwrap_or(&task.rev).to_string(),
+        op: Op::Toggle,
+    };
+    let edited = made(&mut core, registry, &rel, &edit).map_err(door)?;
+    let text = core.read_file(&rel).map_err(door)?.text;
+    let raw = |at: usize| text.lines().nth(at - 1).unwrap_or_default().to_string();
+    Ok(Toggled {
+        path: shown.to_string(),
+        line: edited.item.line,
+        status: status_of(&edited.item).agenda_name(),
+        raw: raw(edited.item.line),
+        id: edited.item.rev.clone(),
+        next: (edited.next.as_ref()).map(|n| NextTask {
+            line: n.line,
+            raw: raw(n.line),
+            id: n.rev.clone(),
+        }),
+        warning: edited.warning,
+        text: String::new(),
     })
 }
 
-/// Who `item set` edits as.
+/// The task that starts on `line` of the note at workspace-relative `rel`, as `items/query`
+/// hands it out.
+fn task_at(core: &Core, rel: &str, line: usize) -> Result<Option<Item>, Error> {
+    let filter = gateway::Filter {
+        note: Some(rel.to_string()),
+        ..Default::default()
+    };
+    let select = gateway::Select {
+        kind: "task".to_string(),
+        filter,
+    };
+    let query = gateway::Query {
+        select,
+        page: gateway::Page::default(),
+    };
+    match core.query_items(&query) {
+        Ok(found) => Ok(found.items.into_iter().find(|i| i.line == line)),
+        // A flavour without task lists has no `task` kind, so no line is a task.
+        Err(e) if e.reason == Reason::Refused => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// A task's status type, as the gateway hands it out with every task (`status_type`).
+fn status_of(task: &Item) -> StatusType {
+    let Data::Typed(t) = &task.data else {
+        return StatusType::NonTask;
+    };
+    let named = t.fields.get("status_type").and_then(|v| v.as_str());
+    named
+        .and_then(StatusType::named)
+        .unwrap_or(StatusType::NonTask)
+}
+
+/// `edit` made by the core, on the file at `rel`: at once in a note; in a file another owner
+/// reads, once its owner answers, started here. The core's news is taken afterwards, so the
+/// owners' cache keeps what they gave for the file as it is now.
+fn made(core: &mut Core, registry: &mut Registry, rel: &str, edit: &Edit) -> Result<Edited, Error> {
+    let edited = match core.edit_item(BY, edit)? {
+        Answer::Now(edited) => Ok(*edited),
+        Answer::Later(ticket) => {
+            let mut answer = None;
+            Owners::new(registry, core).serve(core, |c| {
+                let mut answers = c.take_edited().into_iter();
+                answer = answers.find_map(|(_, t, a)| (t == ticket).then_some(a));
+                answer.is_some()
+            });
+            answer.unwrap_or_else(|| {
+                let message = format!("{rel}'s owner didn't answer in {} s", PATIENCE.as_secs());
+                Err(Error::new(Reason::Refused, message))
+            })
+        }
+    };
+    core.poll();
+    edited
+}
+
+/// Who `item set` and `task toggle` edit as.
 const BY: &str = "cold-lava";
 
 /// The owners a command line run started, to answer what the core asks them.
