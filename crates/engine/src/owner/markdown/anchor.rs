@@ -9,7 +9,7 @@ use crate::cst::{Kind, Step};
 use crate::edit::EditError;
 use crate::items::{Data, Item, Settings};
 use crate::markdown::Syntax;
-use crate::types::On;
+use crate::sources::On;
 use std::collections::HashMap;
 
 /// What an item gives an anchor.
@@ -219,7 +219,7 @@ mod tests {
     use crate::items::tests::{TRICKY, settings, with_types};
     use crate::items::{Data, Item, Settings};
     use crate::owner::markdown::{self, After, Made};
-    use crate::types::On;
+    use crate::sources::On;
     use serde_json::Value as Json;
     use std::collections::HashSet;
 

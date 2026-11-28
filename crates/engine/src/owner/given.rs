@@ -740,7 +740,7 @@ fn read_piece<'a>(
     let mut items = ancestors.iter().filter(|a| a.role == Role::Item);
     let parent_item = items.find_map(|a| a.item.as_ref().map(|(id, _)| id.clone()));
     let mut words = String::new();
-    crate::matcher::push_words(&mut words, &flat.words);
+    crate::words::push(&mut words, &flat.words);
     let on = match p.role {
         Role::Section => Some(On::Section),
         Role::Text => Some(On::Text),
@@ -1062,7 +1062,7 @@ pub fn words(runs: &[Run]) -> String {
     let mut flat = Flat::default();
     flat.push(runs);
     let mut out = String::new();
-    crate::matcher::push_words(&mut out, &flat.words);
+    crate::words::push(&mut out, &flat.words);
     out
 }
 
