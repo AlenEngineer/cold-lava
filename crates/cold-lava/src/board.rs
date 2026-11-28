@@ -1173,6 +1173,12 @@ impl Board {
             return false;
         }
         // A half-written file fails to parse; we'll catch the complete one on the next check.
+        // An empty one parses as a canvas with no cards, but is a program that rewrites the
+        // file in place caught between emptying and writing it: merged, it would take away
+        // every card and the selection with them (#441).
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            return false;
+        }
         let Ok((theirs, twins)) = parse(&bytes, &self.path) else {
             return false;
         };
