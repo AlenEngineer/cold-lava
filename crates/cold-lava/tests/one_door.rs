@@ -271,14 +271,14 @@ const WRITES: [&str; 3] = ["trash::", "write::", "Seen::"];
 const GATEWAY_FILES: &str = "files::";
 
 /// Deleting, restoring and making a folder are `Core::delete_file`, `restore_file` and
-/// `create_folder`, asked as `menu`: nothing in the app names `trash::delete`,
-/// `trash::restore` or `write::create_dir`. What it still names of the engine's trash and
-/// write functions:
+/// `create_folder`, asked as `menu`, and the menu's new notes are `Core::create_file`
+/// (#270 B4): nothing in the app names `trash::delete`, `trash::restore` or
+/// `write::create_dir`, and the menu names no `write::create`. What it still names of the
+/// engine's trash and write functions:
 ///
 /// - `trash::system_bin`: the delete prompt's "goes to" line.
 /// - `trash::free_path`: the name an undo offers when the old one is taken. It reads.
-/// - `write::create`, `create_if_missing` and `Seen::kept` (to write over it) in `home.rs`:
-///   new notes, and a note's new text. Later groups of #193.
+/// - `Seen::kept` (to write over it) in `home.rs`: a note's new text. A later group of #193.
 /// - `write::create_if_missing` and `Seen::kept` in `board.rs`: the whiteboard saves its
 ///   canvas.
 #[test]
@@ -290,9 +290,6 @@ fn the_app_deletes_restores_and_makes_folders_through_the_core() {
         "home.rs: Seen::kept",
         "home.rs: trash::free_path",
         "home.rs: trash::system_bin",
-        "home.rs: write::create",
-        "home.rs: write::create_if_missing",
-        "home.rs: write::create_if_missing",
     ];
     assert_eq!(named, left);
     let home = sources().into_iter().find(|(file, _)| file == "home.rs");
@@ -301,6 +298,7 @@ fn the_app_deletes_restores_and_makes_folders_through_the_core() {
         "core.delete_file(MENU,",
         "core.restore_file(MENU,",
         "core.create_folder(MENU,",
+        "core.create_file(",
     ] {
         assert!(home.contains(asked), "the menu asks the core: {asked}");
     }

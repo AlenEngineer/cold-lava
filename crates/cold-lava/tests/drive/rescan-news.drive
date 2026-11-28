@@ -1,6 +1,7 @@
-# Creating a note reads the whole workspace again, which tells the agenda to query again
-# (items/reset). The agenda hears that at once, not with the next change: when the two came
-# together, it queried, found the new task already there, and then added it a second time.
+# A note made from the menu, then a task another program writes right after: the agenda
+# shows the task once. The core reads the new note inside the create, so the agenda hears
+# no reset; when a reset and the change came together, it queried, found the new task
+# already there, and then added it a second time.
 size 140x30
 env COLD_LAVA_EDITOR=none
 env COLD_LAVA_TODAY=2026-11-07
