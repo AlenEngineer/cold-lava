@@ -3,6 +3,7 @@
 
 use crate::app::{ACCENT, ACCENT_SOFT, DIM, HIT, MUTED, NOTE};
 use crate::commands::{self, BoardAction, HistoryAction, Key, KeyHint, Keymap};
+use crate::configured::Configured;
 use crate::history::{Exit, Nav};
 use crate::looks;
 use crate::notice::Notice;
@@ -301,7 +302,7 @@ pub fn launch(
         }
     };
     let mut core = crate::owned::open(workspace_root, registry)?;
-    let mut b = Board::open(workspace_root, path, None)?;
+    let mut b = Board::open(workspace_root, core.configured(), path, None)?;
     let ran = b.run(terminal, &mut core, registry);
     b.close(&mut core);
     ran
@@ -444,8 +445,14 @@ impl Picker {
 
 impl Board {
     /// The board at `path`, created if missing, with `node` selected and in view when it is
-    /// one of its nodes.
-    pub fn open(workspace_root: &Path, path: PathBuf, node: Option<String>) -> Result<Board> {
+    /// one of its nodes. Its shapes are read with what the workspace's core was `configured`
+    /// with.
+    pub fn open(
+        workspace_root: &Path,
+        configured: &Configured,
+        path: PathBuf,
+        node: Option<String>,
+    ) -> Result<Board> {
         crate::write::create_if_missing(&path, b"{\n\t\"nodes\":[],\n\t\"edges\":[]\n}\n")?;
         let disk = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let (doc, twins) = parse(&disk, &path)?;
@@ -461,7 +468,10 @@ impl Board {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let live = Live::new(crate::shapes::for_workspace(&workspace_root));
+        let live = Live::new(crate::shapes::for_workspace(
+            &workspace_root,
+            &configured.shapes,
+        ));
         let sel = node.filter(|id| doc.nodes.iter().any(|n| n.id == *id));
         Ok(Board {
             live,
@@ -1042,7 +1052,7 @@ impl Board {
         let members: Vec<String> = (self.group_members(&sel).into_iter())
             .filter(|id| self.live.is_shape(id))
             .collect();
-        let loaded = crate::shapes::for_workspace(&self.workspace_root);
+        let loaded = crate::shapes::for_workspace(&self.workspace_root, &core.configured().shapes);
         let taken = |id: &str| loaded.get(id).is_some();
         let start = match members.as_slice() {
             [] => {
@@ -1131,7 +1141,10 @@ impl Board {
         };
         if editor.close(core) {
             self.live.close(core);
-            self.live = Live::new(crate::shapes::for_workspace(&self.workspace_root));
+            self.live = Live::new(crate::shapes::for_workspace(
+                &self.workspace_root,
+                &core.configured().shapes,
+            ));
             self.flash("shapes read again: s places the one you made");
         }
     }
@@ -3917,7 +3930,7 @@ mod tests {
         let path = dir.join("B.canvas");
         let canvas = |nodes: Vec<Value>| json!({"nodes": nodes, "edges": []}).to_string();
         std::fs::write(&path, canvas(vec![card("a", 0, "A")])).unwrap();
-        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), None).unwrap();
 
         // Our edit, while someone else is halfway through writing the file.
         let ours = canvas(vec![card("a", 0, "A"), card("ours", 300, "Ours")]);
@@ -3951,7 +3964,7 @@ mod tests {
             vec![card("a", 0, "A"), card("b", 300, "B")],
         );
         let mut registry = Registry::empty();
-        let mut b = Board::open(&dir, path.clone(), Some("a".into())).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), Some("a".into())).unwrap();
         b.set_color(Some("1"));
         let mut theirs = on_disk(&path);
 
@@ -3985,7 +3998,7 @@ mod tests {
             "board-stays-empty",
             vec![card("a", 0, "A"), card("b", 300, "B")],
         );
-        let mut b = Board::open(&dir, path.clone(), Some("a".into())).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), Some("a".into())).unwrap();
         std::fs::write(&path, "").unwrap();
         assert!(!b.sync_from_disk());
         b.set_color(Some("1"));
@@ -4013,7 +4026,7 @@ mod tests {
         let (target, path) = (dir.join("Real/B.canvas"), dir.join("B.canvas"));
         std::fs::write(&target, canvas(vec![card("a", 0, "A")])).unwrap();
         std::os::unix::fs::symlink("Real/B.canvas", &path).unwrap();
-        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), None).unwrap();
         let ours = canvas(vec![card("a", 0, "A"), card("ours", 300, "Ours")]);
         b.doc = parse(ours.as_bytes(), &path).unwrap().0;
         b.save();
@@ -4031,7 +4044,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("B.canvas");
         std::fs::write(&path, canvas(nodes)).unwrap();
-        let core = Core::open(&dir).unwrap();
+        let core = Core::open(&dir, Default::default()).unwrap();
         (dir, path, core)
     }
 
@@ -4047,7 +4060,7 @@ mod tests {
     fn an_outside_change_the_core_reports_is_merged_on_the_next_tick() {
         let (dir, path, mut core) = workspace("board-core-event", vec![card("a", 0, "A")]);
         let mut registry = Registry::empty();
-        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), None).unwrap();
         b.doc.nodes[0].text = Some("A, ours".into());
 
         // Two outside changes before one tick: the file as it is now is what merges.
@@ -4070,7 +4083,7 @@ mod tests {
         let cards = vec![card("a", 0, "Alpha"), card("b", 300, "Bravo")];
         let (dir, path, mut core) = workspace("board-core-edit", cards.clone());
         let mut registry = Registry::empty();
-        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), None).unwrap();
         let changed = [CoreEvent::BoardChanged("B.canvas".into())];
 
         b.mode = Mode::Edit {
@@ -4140,7 +4153,7 @@ mod tests {
         use crate::shapes::{Layer, load};
         let (dir, path, _) = workspace(name, Vec::new());
         std::fs::write(dir.join("Krakatoa.md"), "# Krakatoa\n").unwrap();
-        let core = Core::open(&dir).unwrap();
+        let core = Core::open(&dir, Default::default()).unwrap();
         let registry = Registry::new(vec![Box::new(Chatty { pushy })]);
         let chatty = registry.by_name("chatty").unwrap();
         let shape: toml::Table = toml::from_str(
@@ -4154,7 +4167,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let mut b = Board::open(&dir, path, None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path, None).unwrap();
         b.live = Live::new(load([
             Layer::built_in(),
             Layer::extension("chatty", [("chatty.box".to_string(), shape)]),
@@ -4277,7 +4290,7 @@ mod tests {
     #[test]
     fn a_notice_made_while_a_card_is_typed_waits_for_the_edit_to_end() {
         let (dir, path, _core) = workspace("board-notice", vec![card("a", 0, "Alpha")]);
-        let mut b = Board::open(&dir, path, None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path, None).unwrap();
         b.mode = Mode::Edit {
             id: "a".into(),
             buf: "Alpha, typed".into(),
@@ -4329,7 +4342,7 @@ mod tests {
     fn twins_board(name: &str, sel: &str) -> (PathBuf, PathBuf, Board) {
         let (dir, path, _core) = workspace(name, Vec::new());
         std::fs::write(&path, twins_canvas()).unwrap();
-        let b = Board::open(&dir, path.clone(), Some(sel.into())).unwrap();
+        let b = Board::open(&dir, &Default::default(), path.clone(), Some(sel.into())).unwrap();
         assert_eq!(b.selected(), Some(sel));
         (dir, path, b)
     }
@@ -4436,7 +4449,7 @@ mod tests {
     fn each_edit_is_one_undo_step_and_redo_brings_it_back() {
         let cards = vec![card("a", 0, "Alpha"), card("b", 300, "Bravo")];
         let (dir, path, _core) = workspace("board-undo-steps", cards);
-        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), None).unwrap();
         b.save();
         b.sel = Some("a".into());
         let edits: [fn(&mut Board); 7] = [
@@ -4481,7 +4494,7 @@ mod tests {
     #[test]
     fn a_new_card_left_empty_leaves_no_undo_step() {
         let (dir, path, _core) = workspace("board-undo-new", vec![card("a", 0, "Alpha")]);
-        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), None).unwrap();
         b.save();
         b.sel = Some("a".into());
         let read = || std::fs::read(&path).unwrap();
@@ -4529,7 +4542,7 @@ mod tests {
         ];
         let (dir, path, mut core) = workspace("board-undo-outside", cards);
         let mut registry = Registry::empty();
-        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), None).unwrap();
         b.sel = Some("a".into());
         b.set_color(Some("3"));
         b.move_selected(20.0, 0.0);
@@ -4573,7 +4586,7 @@ mod tests {
         let cards = vec![card("a", 0, "Alpha"), card("b", 300, "Bravo")];
         let (dir, path, mut core) = workspace("board-redo-outside", cards);
         let mut registry = Registry::empty();
-        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), None).unwrap();
         b.sel = Some("a".into());
         b.set_color(Some("3"));
         b.undo();
@@ -4607,7 +4620,7 @@ mod tests {
     fn a_card_typed_while_another_program_empties_the_board_undoes_nothing_before_it() {
         let (dir, path, mut core) = workspace("board-undo-emptied", vec![card("a", 0, "Alpha")]);
         let mut registry = Registry::empty();
-        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), None).unwrap();
         b.sel = Some("a".into());
         b.set_color(Some("3"));
         b.new_text_card(None, None);
@@ -4634,7 +4647,7 @@ mod tests {
     fn undoing_a_reload_keeps_what_another_program_removed() {
         let cards = vec![card("a", 0, "Alpha"), card("b", 300, "Bravo")];
         let (dir, path, _core) = workspace("board-undo-reload", cards);
-        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), None).unwrap();
         b.doc.nodes[1].text = Some("Bravo, not saved".into());
         b.reload();
         b.undo();
@@ -4664,7 +4677,7 @@ mod tests {
             card("c", 600, "Charlie"),
         ];
         let (dir, path, _core) = workspace("board-undo-unseen", cards);
-        let mut b = Board::open(&dir, path.clone(), None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path.clone(), None).unwrap();
         let cards_now = || ids(&on_disk(&path), "nodes");
         b.sel = Some("a".into());
         b.set_color(Some("3"));
@@ -4721,7 +4734,7 @@ mod tests {
     #[test]
     fn twins_survive_an_outside_change_merged_into_an_edit() {
         let (dir, path, mut b) = twins_board("board-twins-merge", SECOND);
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let mut registry = Registry::empty();
         b.mode = Mode::Edit {
             id: SECOND.into(),
@@ -4919,7 +4932,7 @@ mod tests {
         let edge = json!({"id": "e", "fromNode": "a", "toNode": "b", "label": "go\u{1b}]0;t\u{7}"});
         let file = json!({"nodes": nodes, "edges": [edge]});
         std::fs::write(&path, file.to_string()).unwrap();
-        let mut b = Board::open(&dir, path, None).unwrap();
+        let mut b = Board::open(&dir, &Default::default(), path, None).unwrap();
         b.flash("tally: no\u{1b}]0;t\u{7}\u{202e}pe");
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| b.draw(f, &[])).unwrap();

@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use canvas::{Kind, Part, Point, Rect, Side};
 use cold_lava_canvas as canvas;
@@ -686,35 +686,26 @@ fn parse(value: toml::Value) -> Result<Definition, Problem> {
     (value.try_into::<Definition>()).map_err(|e| Problem::toml(&e))
 }
 
-static CONFIGURED: OnceLock<Vec<Layer>> = OnceLock::new();
-
-/// The layers every workspace gets after the built-in one: extensions' shapes and config.toml's,
-/// which the frontend reads and sets once at startup.
-pub fn set_configured(layers: Vec<Layer>) {
-    let _ = CONFIGURED.set(layers);
-}
-
-/// The shapes a workspace draws with: built in, the configured layers, then its own file.
-pub fn for_workspace(root: &Path) -> Shapes {
-    let configured = CONFIGURED.get().cloned().unwrap_or_default();
+/// The shapes a workspace draws with: built in, the `configured` layers (extensions' shapes
+/// and config.toml's, as the frontend handed them in), then its own file.
+pub fn for_workspace(root: &Path, configured: &[Layer]) -> Shapes {
     load(
         std::iter::once(Layer::built_in())
-            .chain(configured)
+            .chain(configured.iter().cloned())
             .chain(Layer::workspace(root)),
     )
 }
 
 /// The shapes a workspace draws with, and `d` as the workspace's shape `id`, last: what the shape
 /// editor draws, binds and checks before it saves. Its mistakes are the errors about `id`.
-pub fn with_draft(root: &Path, id: &str, d: &Definition) -> Shapes {
-    let configured = CONFIGURED.get().cloned().unwrap_or_default();
+pub fn with_draft(root: &Path, configured: &[Layer], id: &str, d: &Definition) -> Shapes {
     let mut draft = Layer::empty(Origin::Workspace {
         path: root.join(WORKSPACE_FILE),
     });
     draft.definitions.push((id.to_string(), Ok(d.clone())));
     load(
         std::iter::once(Layer::built_in())
-            .chain(configured)
+            .chain(configured.iter().cloned())
             .chain(Layer::workspace(root))
             .chain(std::iter::once(draft)),
     )

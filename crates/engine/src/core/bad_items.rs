@@ -211,7 +211,7 @@ fn open(name: &str, file: &Json, cache: Option<&Path>) -> Core {
 }
 
 fn reopen(dir: &Path, cache: Option<&Path>) -> Core {
-    let mut core = Core::open(dir).unwrap();
+    let mut core = Core::open(dir, Default::default()).unwrap();
     let kind = OwnedKind {
         extension: "probe".into(),
         owner: OWNER.into(),
@@ -609,7 +609,7 @@ fn the_cache_keeps_what_was_left_out_through_every_edit() {
         assert_eq!(saved(), 2, "save {save}");
         // From the cache alone: the probe isn't asked, and an edit goes ahead.
         drop(core);
-        core = Core::open(&dir).unwrap();
+        core = Core::open(&dir, Default::default()).unwrap();
         let kind = OwnedKind {
             extension: "probe".into(),
             owner: OWNER.into(),
@@ -660,7 +660,7 @@ fn a_tick_on_a_board_with_cards_left_out_writes_only_its_own_card() {
         std::fs::write(dir.join("Lava.md"), "# Lava\n").unwrap();
         let board = json!({"nodes": nodes, "edges": []});
         std::fs::write(dir.join("Board.canvas"), board.to_string()).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let listed: Vec<Item> = core.index.workspace.owned[0].items.clone();
         let tasks: Vec<&Item> = listed.iter().filter(|i| i.data.kind() == "task").collect();
         assert!(
@@ -762,7 +762,7 @@ fn cached_by_a_looser_binary(name: &str) -> (PathBuf, PathBuf) {
 #[test]
 fn a_cached_answer_keeps_its_items_when_one_no_longer_reads() {
     let (dir, base) = cached_by_a_looser_binary("stale");
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let kind = OwnedKind {
         extension: "probe".into(),
         owner: OWNER.into(),
@@ -817,7 +817,7 @@ fn a_cached_answer_that_no_longer_reads_is_asked_for_again_after_a_save() {
     let other = json!({"items": [chore("b", "Feed the cat")], "links": []});
     std::fs::write(dir.join("B.probe"), other.to_string()).unwrap();
     let session = || {
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let kind = OwnedKind {
             extension: "probe".into(),
             owner: OWNER.into(),
@@ -900,7 +900,7 @@ fn a_board_is_reported_again_only_when_what_it_leaves_out_changes() {
     let hidden = card("", 0, "- [ ] Hidden");
     let first = board(&[hidden.clone(), card("g", 9, "- [ ] Shown")]);
     std::fs::write(dir.join("Board.canvas"), first).unwrap();
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let empty = "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes";
     assert_eq!(reported(&core.poll()), [empty]);
 
@@ -947,7 +947,7 @@ fn a_board_with_a_card_left_out_is_reported_as_it_opens() {
         {"id": "g", "type": "text", "text": "- [ ] Shown", "x": 0, "y": 9, "width": 1, "height": 1},
     ], "edges": []});
     std::fs::write(dir.join("Board.canvas"), board.to_string()).unwrap();
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let events = core.poll();
     let trouble: Vec<(&str, &str, &str)> = (events.iter())
         .filter_map(|e| match e {
@@ -984,7 +984,7 @@ fn a_board_with_a_card_left_out_is_reported_as_it_opens() {
 #[test]
 fn a_cached_answer_that_no_longer_reads_is_reported_once() {
     let (dir, base) = cached_by_a_looser_binary("stale-once");
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let kind = OwnedKind {
         extension: "probe".into(),
         owner: OWNER.into(),
@@ -1034,7 +1034,7 @@ fn a_board_isnt_reported_again_after_a_rename() {
         {"id": "c", "type": "file", "file": "Lava.md", "x": 0, "y": 9, "width": 1, "height": 1},
     ], "edges": []});
     std::fs::write(dir.join("Board.canvas"), board.to_string()).unwrap();
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     assert_eq!(reported(&core.poll()).len(), 1, "as it opens");
 
     let note = core.index.by_rel("Lava").unwrap();
@@ -1075,7 +1075,7 @@ fn a_board_says_when_it_leaves_nothing_out_any_more() {
     let board = |cards: &[Json]| json!({"nodes": cards, "edges": []}).to_string();
     let left = board(&[card("", 0), card("g", 9)]);
     std::fs::write(dir.join("Board.canvas"), &left).unwrap();
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let empty = "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes";
     assert_eq!(said(&core.poll()), [Some(empty.to_string())]);
 
@@ -1119,7 +1119,7 @@ fn a_board_a_rescan_no_longer_finds_says_so() {
     .to_string();
     std::fs::write(dir.join("Ash/A.canvas"), &board).unwrap();
     std::fs::write(dir.join("B.canvas"), &board).unwrap();
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let empty = "card 1 (id \"\") is left out: its place is empty or longer than 1024 bytes";
     let left = |path: &str, message: Option<&str>| (path.to_string(), message.map(String::from));
     /// What `events` say each owned file leaves out, by its path.

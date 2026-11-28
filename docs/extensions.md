@@ -937,8 +937,9 @@ style.minutes = { badge = true, icon = "⏱" }
   conditions: each header column and property counts, as do `tag`, `folder`, `file-type`,
   `section`, `language`, `inside` and a `match`.
 - **Settings.** `items::Settings` carries the loaded types and the compiled matcher, cached per
-  workspace. The frontend hands over extensions' and `config.toml`'s types once at startup
-  (`types::set_configured`), and `types::for_workspace` adds the workspace's own file.
+  workspace. The frontend hands over extensions' and `config.toml`'s types with the rest of
+  what it configured (`configured::Configured`, given to `Core::open`), and
+  `types::for_workspace` adds the workspace's own file.
 - **Cost of inline types:** no second parse. When a type is `inline`, the pass collects every
   paragraph, list item, heading and table row (otherwise only those some type reads) and the
   code ranges, and each block's text runs each inline pattern that passed the note's gate.
@@ -2799,7 +2800,7 @@ new text.**
 - **Then the settings, then the overrides,** each later one winning: Obsidian's settings where
   the workspace has them (`useMarkdownLinks` and `newLinkFormat` in `.obsidian/app.json`, the
   Tasks plugin's `taskFormat`); `[style]` in config.toml, which the binary reads and hands over
-  (`style::set_configured`, as `[markdown]`); the workspace's `.cold-lava/style.toml`. Each
+  (`Configured::style`, as `[markdown]`'s flavour); the workspace's `.cold-lava/style.toml`. Each
   choice says where it came from. An unknown key or value in either file is reported (`cold-lava
   style` exits with 1, `cold-lava keys` lists config.toml's) and skipped.
 - **`cold-lava style WORKSPACE [--json]`** prints each choice with its value, where it came from

@@ -396,9 +396,9 @@ const ITEM_EDITS: [&str; 4] = ["edit", "tasks", "frontmatter", "owner"];
 /// The functions under `ITEM_EDITS` that make no file's new text and write nothing, each
 /// read in the engine's source. A function those modules gain is listed until it is named
 /// here: `tasks`' are dates, the agenda and `FILE:LINE` taken apart; `built_in` names a
-/// kind's owner and `is_board` says a file is a board; `places` names a canvas's nodes; the
-/// `attributes` two keep the configured readings in memory and load a workspace's.
-const READERS: [&str; 10] = [
+/// kind's owner and `is_board` says a file is a board; `places` names a canvas's nodes;
+/// `attributes::for_workspace` loads a workspace's readings.
+const READERS: [&str; 9] = [
     "tasks::agenda",
     "tasks::first_of_month",
     "tasks::last_of_month",
@@ -408,7 +408,6 @@ const READERS: [&str; 10] = [
     "owner::is_board",
     "owner::canvas::places",
     "owner::markdown::attributes::for_workspace",
-    "owner::markdown::attributes::set_configured",
 ];
 
 /// The names the lists are about, each once: the modules of `WRITES`, the gateway's files,
@@ -1778,7 +1777,7 @@ fn every_field_of_an_answer_names_its_bound() {
         remedy,
         &found,
         &[
-            "../host/src/process.rs: serde_json::from_ ×4",
+            "../host/src/process.rs: serde_json::from_ ×1",
             "../host/src/rpc.rs: serde_json::from_ ×5",
         ],
     );

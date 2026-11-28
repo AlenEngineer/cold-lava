@@ -46,9 +46,10 @@ mod whichkey;
 mod words;
 
 use cold_lava_engine::{
-    act, bind, core, daily, edit, files, frontmatter, gateway, index, items, json_canvas, links,
-    markdown, merge, origin, owner, paths, problem, read, recipe, rel_path, rename, resolver,
-    search, shapes, sources, style, tasks, templates, tidy, trash, types, workspace, write,
+    act, bind, configured, core, daily, edit, files, frontmatter, gateway, index, items,
+    json_canvas, links, markdown, merge, origin, owner, paths, problem, read, recipe, rel_path,
+    rename, resolver, search, shapes, sources, style, tasks, templates, tidy, trash, types,
+    workspace, write,
 };
 
 use anyhow::Result;
@@ -331,41 +332,8 @@ fn run() -> Result<()> {
     };
     let json = args.has("json");
     let mut registry = ext::Registry::load();
-    config::load(registry.commands());
-    let mut layers: Vec<types::Layer> = registry
-        .manifests()
-        .map(|m| {
-            let types = m.types.iter().map(|t| (t.id.clone(), t.definition.clone()));
-            types::Layer::extension(&m.name, types)
-        })
-        .collect();
-    if let Some(path) = config::path() {
-        layers.push(types::Layer::config(&path, config::get().types.clone()));
-    }
-    types::set_configured(layers);
-    if let Some(path) = config::path() {
-        let written = config::get().attributes.clone();
-        attributes::set_configured(vec![attributes::Layer::config(&path, written)]);
-    }
-    let mut layers: Vec<shapes::Layer> = registry
-        .manifests()
-        .map(|m| {
-            let shapes = m
-                .shapes
-                .iter()
-                .map(|s| (s.id.clone(), s.definition.clone()));
-            shapes::Layer::extension(&m.name, shapes)
-        })
-        .collect();
-    if let Some(path) = config::path() {
-        let c = config::get();
-        layers.push(shapes::Layer::config(
-            &path,
-            c.shapes.clone(),
-            c.glyphs.clone(),
-        ));
-    }
-    shapes::set_configured(layers);
+    config::load(&registry);
+    let configured = config::configured();
 
     match args.word(0) {
         Some("keys") => {
@@ -409,7 +377,7 @@ fn run() -> Result<()> {
                 Some(dir) => PathBuf::from(dir),
                 None => workspace::find_workspace_root(Path::new(".")),
             };
-            let found = types::for_workspace(&root);
+            let found = types::for_workspace(&root, &configured);
             if json {
                 say::json(&found)?;
             } else {
@@ -433,7 +401,7 @@ fn run() -> Result<()> {
                 Some(dir) => PathBuf::from(dir),
                 None => workspace::find_workspace_root(Path::new(".")),
             };
-            let found = attributes::for_workspace(&root);
+            let found = attributes::for_workspace(&root, &configured.attributes);
             if json {
                 say::json(&found)?;
             } else {
@@ -459,7 +427,7 @@ fn run() -> Result<()> {
                 Some(dir) => PathBuf::from(dir),
                 None => workspace::find_workspace_root(Path::new(".")),
             };
-            let found = shapes::for_workspace(&root);
+            let found = shapes::for_workspace(&root, &configured.shapes);
             if let Some(id) = args.values.get("render") {
                 let Some(shape) = found.get(id) else {
                     anyhow::bail!("no shape is called {id}; cold-lava shapes lists them");
@@ -518,7 +486,7 @@ fn run() -> Result<()> {
         }
         Some("graph") => {
             let root = PathBuf::from(args.word(1).unwrap_or("."));
-            let core = core::Core::open(&root)?;
+            let core = core::Core::open(&root, configured.clone())?;
             if core.index.workspace.notes.is_empty() {
                 anyhow::bail!("no .md notes found under {}", core.root().display());
             }

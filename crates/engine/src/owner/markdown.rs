@@ -1117,7 +1117,8 @@ mod tests {
     #[test]
     fn a_rename_in_the_example_workspace_changes_only_link_targets() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../example-workspace");
-        let ix = crate::index::Index::build(crate::workspace::scan(&root).unwrap());
+        let ix =
+            crate::index::Index::build(crate::workspace::scan(&root, Default::default()).unwrap());
         let mut total = 0;
         for note in 0..ix.workspace.notes.len() {
             let plan = crate::rename::plan(&ix, note, "Moved Elsewhere/Renamed Note.md").unwrap();

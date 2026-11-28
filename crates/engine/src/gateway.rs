@@ -202,7 +202,7 @@ pub enum Reason {
 
 impl Reason {
     /// The reason a write refused or failed with, as its kind says: the one reading of a
-    /// `WriteError` every caller asks (`EditError::written` too), never its variants matched.
+    /// `WriteError` every caller asks, never its variants matched.
     pub fn of(e: &write::WriteError) -> Reason {
         match e {
             write::WriteError::Changed(_) => Reason::Changed,
@@ -228,20 +228,6 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-impl EditError {
-    /// An edit's write refused or failed, read as `Reason::of` reads it, in the write's words,
-    /// with a kept text named from the workspace's `root` (`WriteError::named_from`). There is
-    /// no `From<WriteError>`, so no caller can leave the root out.
-    pub fn written(e: write::WriteError, root: &Path) -> EditError {
-        let words = e.named_from(root);
-        match Reason::of(&e) {
-            Reason::Changed => EditError::Changed(words),
-            Reason::Kept => EditError::Kept(words),
-            _ => EditError::Io(words),
-        }
-    }
-}
 
 /// A refusal the gateway gave read back as an edit's error (the CLI's `item set` on an owned
 /// file): `From<EditError> for Error` the other way, beside it. Every reason is named, so a
@@ -1000,7 +986,7 @@ fields.scheduled = { marker = "⏳", type = "date" }
     #[test]
     fn queries_filter_by_folder_tag_status_date_text_and_property() {
         let dir = workspace("filter");
-        let core = Core::open(&dir).unwrap();
+        let core = Core::open(&dir, Default::default()).unwrap();
         let f = |f: Filter| words(&core, "task", f);
         let none = Vec::<String>::new();
         assert_eq!(
@@ -1097,7 +1083,7 @@ fields.text = { rest = true }
 "#;
         std::fs::write(dir.join(".cold-lava/types.toml"), chore).unwrap();
         std::fs::write(dir.join("Chores.md"), "- [/] Sweep #chore\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let errors = &core.index.workspace.item_settings().types.errors;
         assert!(errors.is_empty(), "{errors:?}");
         let chore = core.query_items(&all(select("chore", Filter::default())));
@@ -1138,7 +1124,7 @@ fields.text = { rest = true }
     #[test]
     fn queries_page_after_the_last_item() {
         let dir = workspace("page");
-        let core = Core::open(&dir).unwrap();
+        let core = Core::open(&dir, Default::default()).unwrap();
         let page = |after: Option<String>| {
             let page = Page {
                 after,
@@ -1227,7 +1213,7 @@ fields.text = { rest = true }
     #[test]
     fn subscribers_hear_what_was_added_updated_and_removed() {
         let dir = workspace("subscribe");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let open = Filter {
             status: vec!["todo".into()],
             ..Filter::default()
@@ -1290,7 +1276,7 @@ fields.text = { rest = true }
     #[test]
     fn an_edit_tried_writes_nothing_and_answers_as_the_edit() {
         let dir = workspace("would");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let before = std::fs::read_to_string(dir.join("Plan.md")).unwrap();
         let rent = task(&core, "Pay rent");
         assert_eq!(core.item("Plan.md", &rent.id), Some(rent.clone()));
@@ -1318,7 +1304,7 @@ fields.text = { rest = true }
     #[test]
     fn edits_go_through_the_safe_path_and_name_who_made_them() {
         let dir = workspace("edit");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let rent = task(&core, "Pay rent");
         let done = now(core.edit_item("table", &set(&rent, "due", json!("2026-12-01"))));
         let done = done.unwrap();
@@ -1398,7 +1384,7 @@ fields.text = { rest = true }
         .unwrap();
         let bills = "- [ ] Rent 🔁 every month 📅 2026-11-01\n  paid by card ^rent\n";
         std::fs::write(dir.join("Bills.md"), bills).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let rent = task(&core, "Rent");
         assert_eq!(rent.block_id.as_deref(), Some("rent"));
         let refused = now(core.edit_item("agenda", &tick(&rent))).unwrap_err();
@@ -1423,7 +1409,7 @@ fields.text = { rest = true }
     fn anchoring_writes_a_name_on_the_item_once_and_names_who_asked() {
         let dir = workspace("anchor-op");
         let plan = dir.join("Plan.md");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let plain = list(&core, "plain item");
         assert_eq!(
             plain.id, "8c129b98cb8ad550",
@@ -1463,7 +1449,7 @@ fields.text = { rest = true }
     fn an_anchor_on_a_stale_item_is_changed_and_nothing_is_written() {
         let dir = workspace("anchor-stale");
         let plan = dir.join("Plan.md");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let plain = list(&core, "plain item");
         let stale = Edit {
             rev: "000000000000".into(),
@@ -1503,7 +1489,7 @@ fields.text = { rest = true }
         let dir = workspace("twins");
         let bills = dir.join("Bills.md");
         std::fs::write(&bills, "- [ ] Pay rent\n- [ ] Pay rent\n- [ ] Pay rent\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         core.subscribe_items("agenda", in_bills()).unwrap();
         let found = core.query_items(&all(in_bills())).unwrap().items;
         assert_eq!(found.len(), 3);
@@ -1542,7 +1528,7 @@ fields.text = { rest = true }
         let dir = workspace("twins-anchored");
         let bills = dir.join("Bills.md");
         std::fs::write(&bills, "- [ ] Pay rent\n- [ ] Pay rent\n- [ ] Pay rent\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let found = core.query_items(&all(in_bills())).unwrap().items;
         let anchored = now(core.edit_item("binder", &anchor(&found[0]))).unwrap();
         assert_ne!(anchored.item.id, found[0].id, "keyed by its anchor");
@@ -1576,7 +1562,7 @@ fields.text = { rest = true }
         ] {
             let dir = workspace(name);
             std::fs::write(dir.join(rel), text).unwrap();
-            let mut core = Core::open(&dir).unwrap();
+            let mut core = Core::open(&dir, Default::default()).unwrap();
             let plain = list(&core, "plain item");
             let done = now(core.edit_item("binder", &anchor(&plain))).unwrap();
             assert_eq!(done.item.block_id.as_deref(), Some("3ckj6e"), "{rel}");
@@ -1591,7 +1577,7 @@ fields.text = { rest = true }
     fn an_anchored_item_keeps_its_id_through_a_reword_a_tick_a_field_a_reorder_and_its_heading() {
         let dir = workspace("anchor-keeps");
         let plan = dir.join("Plan.md");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let rent = task(&core, "Pay rent");
         let anchored = now(core.edit_item("binder", &anchor(&rent))).unwrap().item;
         let name = anchored.block_id.clone().expect("anchored");
@@ -1636,7 +1622,7 @@ fields.text = { rest = true }
                      \"text\":\"- [ ] Check the seismograph\",\
                      \"x\":0,\"y\":0,\"width\":1,\"height\":1}],\"edges\":[]}\n";
         std::fs::write(dir.join("Board.canvas"), board).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let card = task(&core, "seismograph");
         let e = now(core.edit_item("binder", &anchor(&card))).unwrap_err();
         assert_eq!(e.reason, Reason::Refused, "{e}");
@@ -1649,7 +1635,7 @@ fields.text = { rest = true }
         std::fs::remove_dir_all(dir.join(".obsidian")).unwrap();
         let plan = dir.join("Plan.md");
         let before = std::fs::read_to_string(&plan).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let plain = list(&core, "plain item");
         let e = now(core.edit_item("binder", &anchor(&plain))).unwrap_err();
         assert_eq!(e.reason, Reason::Refused, "{e}");
@@ -1856,16 +1842,6 @@ fields.text = { rest = true }
         );
         let kept = write::WriteError::Kept(at(), PathBuf::from(".Lava.md.kept"));
         assert_eq!(Reason::of(&kept), Reason::Kept);
-        let edit = EditError::written(
-            write::WriteError::Kept(
-                PathBuf::from("/w/Lava.md"),
-                PathBuf::from("/w/.Lava.md.kept"),
-            ),
-            Path::new("/w"),
-        );
-        let words = "other text kept in .Lava.md.kept · Lava.md changed while saving";
-        assert_eq!(edit, EditError::Kept(words.into()), "named from the root");
-        assert_eq!(Error::from(edit).reason, Reason::Kept);
         assert_eq!(Reason::of(&write::WriteError::Exists(at())), Reason::Exists);
         let link = write::WriteError::NotAFile(at());
         assert_eq!(Reason::of(&link), Reason::Refused);

@@ -3,13 +3,17 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use serde::Deserialize;
 
 use crate::commands::{self, BOARD, Entry, GRAPH, Key, Keymap, MenuCommand, PANE, READER};
+use crate::configured::Configured;
+use crate::ext::Registry;
 use crate::markdown::{BUILT_IN, Flavour, Syntax};
+use crate::owner::markdown::attributes;
 use crate::problem::Problem;
+use crate::{shapes, types};
 
 #[derive(Default)]
 pub struct Config {
@@ -26,7 +30,7 @@ pub struct Config {
     /// `[[shapes]]` and `[glyphs]` as written, for the engine to check (`shapes::Layer::config`).
     pub shapes: Vec<toml::Table>,
     pub glyphs: toml::Table,
-    /// `[style]`, for the engine (`style::set_configured`).
+    /// `[style]`, for the engine (`Configured::style`).
     pub style: crate::style::Overrides,
     /// The problems in the file, each in words a person reads.
     pub errors: Vec<Problem>,
@@ -85,17 +89,62 @@ fn commonmark() -> String {
 pub const STYLE: &str = "style";
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
+/// The app's one reading of config.toml for the engine, handed to each core it opens and each
+/// folder it scans; code that holds a `Core` asks the core (`Core::configured`) instead.
+static CONFIGURED: OnceLock<Arc<Configured>> = OnceLock::new();
 
 pub fn path() -> Option<PathBuf> {
     crate::paths::config_dir().map(|c| c.join("cold-lava/config.toml"))
 }
 
-/// Reads the file, checking `[keys]` against every screen's commands, with `menu` as the menu's:
-/// the core's and the loaded extensions'.
-pub fn load(menu: &[Entry<MenuCommand>]) {
-    let _ = CONFIG.set(read(path(), menu));
-    crate::markdown::set_configured(get().flavour.clone());
-    crate::style::set_configured(get().style.clone());
+/// Reads the file, checking `[keys]` against every screen's commands, with the registry's as
+/// the menu's (the core's and the loaded extensions'), and makes what the engine reads every
+/// workspace with from it and the extensions (`configured`).
+pub fn load(registry: &Registry) {
+    let _ = CONFIG.set(read(path(), registry.commands()));
+    let _ = CONFIGURED.set(Arc::new(engine_settings(get(), registry)));
+}
+
+/// What every core and scan the app makes is handed (#180): the flavour and `[style]`, then
+/// the extensions' types and shapes followed by the file's, and the file's attribute readings.
+fn engine_settings(c: &Config, registry: &Registry) -> Configured {
+    let mut types: Vec<types::Layer> = (registry.manifests())
+        .map(|m| {
+            let types = m.types.iter().map(|t| (t.id.clone(), t.definition.clone()));
+            types::Layer::extension(&m.name, types)
+        })
+        .collect();
+    let mut shapes: Vec<shapes::Layer> = (registry.manifests())
+        .map(|m| {
+            let shapes = m
+                .shapes
+                .iter()
+                .map(|s| (s.id.clone(), s.definition.clone()));
+            shapes::Layer::extension(&m.name, shapes)
+        })
+        .collect();
+    let mut readings = Vec::new();
+    if let Some(path) = path() {
+        types.push(types::Layer::config(&path, c.types.clone()));
+        readings.push(attributes::Layer::config(&path, c.attributes.clone()));
+        shapes.push(shapes::Layer::config(
+            &path,
+            c.shapes.clone(),
+            c.glyphs.clone(),
+        ));
+    }
+    Configured {
+        flavour: c.flavour.clone(),
+        style: c.style.clone(),
+        types,
+        attributes: readings,
+        shapes,
+    }
+}
+
+/// What the engine reads every workspace with, as `load` made it (nothing configured before).
+pub fn configured() -> Arc<Configured> {
+    CONFIGURED.get().cloned().unwrap_or_default()
 }
 
 fn read(path: Option<PathBuf>, menu: &[Entry<MenuCommand>]) -> Config {

@@ -542,7 +542,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
-        let v = crate::workspace::scan(&dir).unwrap();
+        let v = crate::workspace::scan(&dir, Default::default()).unwrap();
         (dir, v)
     }
 
@@ -698,7 +698,7 @@ mod tests {
                 "- [ ] Pay rent 📅 2026-11-07\n- [ ] Call the plumber\n",
             )],
         );
-        let mut core = crate::core::Core::open(&dir).unwrap();
+        let mut core = crate::core::Core::open(&dir, Default::default()).unwrap();
         let mut r = Registry::new(vec![Box::new(Agenda::default())]);
         let ext = ExtId(0);
         let run = CommandRequest::Run {
@@ -762,7 +762,7 @@ mod tests {
         use std::cell::Cell;
         use std::rc::Rc;
         let (dir, _) = workspace("midnight", &[("Plan.md", "- [ ] Pay rent 📅 2026-11-08\n")]);
-        let mut core = crate::core::Core::open(&dir).unwrap();
+        let mut core = crate::core::Core::open(&dir, Default::default()).unwrap();
         let clock = Rc::new(Cell::new(d("2026-11-07")));
         let today = Rc::clone(&clock);
         let agenda = Agenda::on(move || today.get());

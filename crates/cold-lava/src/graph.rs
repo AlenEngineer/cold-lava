@@ -456,6 +456,7 @@ mod tests {
             name: "v".into(),
             notes,
             owned: Vec::new(),
+            configured: Default::default(),
             item_settings: Default::default(),
         }
     }
@@ -591,7 +592,7 @@ mod tests {
         for (rel, text, _) in linking {
             std::fs::write(dir.join(rel), text).unwrap();
         }
-        let ix = Index::build(crate::workspace::scan(&dir).unwrap());
+        let ix = Index::build(crate::workspace::scan(&dir, Default::default()).unwrap());
         let links = crate::links::graph(&ix);
         let g = build(&links, ALL);
         let node = |rel: &str| g.find(&format!("n:{}", rel.to_lowercase())).unwrap();

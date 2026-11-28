@@ -105,8 +105,8 @@ edit = { item = "dropped", set-field = { field = "visited", value = "${a.title}"
 #[test]
 fn a_drop_edits_the_dropped_item_as_the_canvas() {
     let dir = workspace("drop", VISITS);
-    let mut core = Core::open(&dir).unwrap();
-    let shapes = shapes::for_workspace(&dir);
+    let mut core = Core::open(&dir, Default::default()).unwrap();
+    let shapes = shapes::for_workspace(&dir, &[]);
     let mut b = bind(
         &mut core,
         &shapes,
@@ -162,7 +162,7 @@ fn a_drop_edits_the_dropped_item_as_the_canvas() {
 #[test]
 fn the_built_in_venns_drop_is_refused_where_tags_are_in_the_text() {
     let dir = workspace("venn-drop", "");
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let shapes = load([Layer::built_in()]);
     let b = bind(
         &mut core,
@@ -243,8 +243,8 @@ edit = { recipe = "rename-tag", options = { from = "${tasks.tag}", to = "fire-ri
 #[test]
 fn a_click_ticks_the_clicked_task_and_a_key_runs_a_recipe() {
     let dir = workspace("click", CHECKLIST);
-    let mut core = Core::open(&dir).unwrap();
-    let shapes = shapes::for_workspace(&dir);
+    let mut core = Core::open(&dir, Default::default()).unwrap();
+    let shapes = shapes::for_workspace(&dir, &[]);
     assert!(shapes.errors.is_empty(), "{:?}", shapes.errors);
     let mut b = bind(
         &mut core,
@@ -309,7 +309,7 @@ fn a_click_ticks_the_clicked_task_and_a_key_runs_a_recipe() {
 #[test]
 fn make_it_a_note_creates_the_note_where_obsidian_would_and_rebinds_as_a_card() {
     let dir = workspace("note", "");
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let shapes = load([Layer::built_in()]);
     let mut sticky = bind(
         &mut core,
@@ -375,7 +375,7 @@ impl Gateway for Forbidden {
 #[test]
 fn a_refused_step_stops_the_rest() {
     let dir = workspace("refused", "");
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let shapes = load([Layer::built_in()]);
     let sticky = bind(&mut core, &shapes, "sticky", &[("text", "text:Nothing")]);
     let make = Gesture::Action {
@@ -400,7 +400,7 @@ extension = true
 #[test]
 fn an_extensions_shape_asks_it_for_a_region_and_a_gesture() {
     let dir = workspace("ext", "");
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let table: toml::Table = toml::from_str(SHIPPED).unwrap();
     let shapes = load([
         Layer::built_in(),
@@ -490,7 +490,7 @@ fn extension_regions_and_gestures_are_an_extensions_only() {
         SHIPPED.replace("[[on]]", "[[shapes.on]]")
     );
     let dir = workspace("not-ext", &mine);
-    let found = shapes::for_workspace(&dir);
+    let found = shapes::for_workspace(&dir, &[]);
     assert!(found.get("tally").is_none());
     assert!(
         found.errors.iter().any(|e| e.to_string().ends_with(
@@ -619,7 +619,7 @@ fn a_shape_answer_is_read_by_what_it_says() {
 #[test]
 fn a_refused_gesture_answer_names_every_step_that_cant_run() {
     let dir = workspace("both", "");
-    let mut core = Core::open(&dir).unwrap();
+    let mut core = Core::open(&dir, Default::default()).unwrap();
     let table: toml::Table = toml::from_str(SHIPPED).unwrap();
     let shapes = load([
         Layer::built_in(),

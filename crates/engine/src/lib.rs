@@ -5,6 +5,7 @@ pub mod act;
 pub mod alphabet;
 pub mod bind;
 pub mod bounded;
+pub mod configured;
 pub mod core;
 pub mod cst;
 pub mod daily;

@@ -3,6 +3,7 @@
 //! (cold-lava, Obsidian, Neovim, git…).
 
 use crate::act::{Ask, Replied, Reply, ShapeAnswer};
+use crate::configured::Configured;
 use crate::files;
 use crate::gateway::{
     self, Answer, Edit, Edited, Found, News, Query, Reason, Select, SubId, Subscriptions, Ticket,
@@ -19,6 +20,7 @@ use crate::workspace::{self, NoteChange, Owned, Workspace};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -146,8 +148,10 @@ pub struct Core {
 }
 
 impl Core {
-    pub fn open(root: &Path) -> Result<Core> {
-        let index = Index::build(workspace::scan(root)?);
+    /// The workspace at `root`, read with what the frontend `configured` (#180): two cores
+    /// open at once each read theirs.
+    pub fn open(root: &Path, configured: Arc<Configured>) -> Result<Core> {
+        let index = Index::build(workspace::scan(root, configured)?);
         let watch = Watch::start(&index.workspace.root);
         let owned = index.workspace.owned.iter();
         let unseen = owned.filter_map(|f| owned_news(None, Some(f))).collect();
@@ -195,6 +199,16 @@ impl Core {
 
     pub fn root(&self) -> &Path {
         &self.index.workspace.root
+    }
+
+    /// What the frontend configured this core with (`Core::open`).
+    pub fn configured(&self) -> &Arc<Configured> {
+        &self.index.workspace.configured
+    }
+
+    /// The whole workspace read again, with what it was opened with.
+    fn scan(&self) -> Result<Workspace> {
+        workspace::scan(self.root(), self.configured().clone())
     }
 
     /// Whether the workspace folder is being watched (if not, call `note_changed` / `rescan`).
@@ -286,8 +300,7 @@ impl Core {
             let news = self.items.reset(&self.index.workspace);
             self.tell(news);
         }
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
     }
 
     /// `file/read` requests for the owners, each with its owner's name: files whose version
@@ -360,8 +373,7 @@ impl Core {
             }
             _ => self.owned_changed(&[path.to_string()]),
         };
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
     }
 
     /// Owned files at `rels` may have changed on disk: read them again, and tell subscribers.
@@ -379,6 +391,14 @@ impl Core {
         }
         events.extend(changed.into_iter().map(Event::OwnedChanged));
         events
+    }
+
+    /// Tell subscribers of the core's own change, and keep its events for the next `poll`.
+    /// `broadcast` alone is for the three that don't: `note_changed_now` hands its events to its
+    /// caller, `poll` returns its own, and `rescan_now`'s `Rescanned` goes to channels only.
+    fn announce(&mut self, events: Vec<Event>) {
+        self.broadcast(&events);
+        self.unseen.extend(events);
     }
 
     fn broadcast(&mut self, events: &[Event]) {
@@ -479,8 +499,7 @@ impl Core {
                 by: by.to_string(),
                 what: written.what.clone(),
             });
-            self.broadcast(&events);
-            self.unseen.extend(events);
+            self.announce(events);
         }
         let edited = gateway::read_back(&self.index.workspace, written)?;
         Ok(Answer::Now(Box::new(edited)))
@@ -658,8 +677,7 @@ impl Core {
         let file = (self.index.workspace.owned.iter()).find(|f| f.rel == path);
         let items: &[Item] = file.map(|f| f.items.as_slice()).unwrap_or_default();
         self.edits.wrote(w, written.map(|()| items));
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
     }
 
     /// The answer of the extension named `by` to `ask` (`shape/region`, `shape/gesture`). Only
@@ -733,8 +751,7 @@ impl Core {
             path: rel.to_string(),
             by: by.to_string(),
         });
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
         let went = trashed.went;
         let trashed = self.trashed.keep(by, trashed);
         Ok(files::Deleted { trashed, went })
@@ -761,8 +778,7 @@ impl Core {
             path: restored.path.clone(),
             by: by.to_string(),
         });
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
         Ok(restored)
     }
 
@@ -783,12 +799,10 @@ impl Core {
     /// reads; `FolderCreated` comes from the next `poll`.
     pub fn create_folder(&mut self, by: &str, rel: &str) -> Result<files::Folder, gateway::Error> {
         let made = files::create_folder(self.root(), rel)?;
-        let events = [Event::FolderCreated {
+        self.announce(vec![Event::FolderCreated {
             path: made.path.clone(),
             by: by.to_string(),
-        }];
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        }]);
         Ok(made)
     }
 
@@ -819,7 +833,7 @@ impl Core {
                 events.push(Event::FileChanged(rel));
                 events
             }
-            Kind::Folder => match workspace::scan(self.root()) {
+            Kind::Folder => match self.scan() {
                 Ok(scanned) => {
                     let mut events = self.rescanned(scanned);
                     events.push(Event::Rescanned);
@@ -875,8 +889,7 @@ impl Core {
         let owned = plan.edits.iter().filter(|e| e.owned.is_some());
         let owned: Vec<String> = owned.map(|e| e.file.clone()).collect();
         events.extend(self.owned_changed(&owned));
-        self.broadcast(&events);
-        self.unseen.extend(events);
+        self.announce(events);
         Ok(applied.title)
     }
 
@@ -889,8 +902,7 @@ impl Core {
     fn reread_note(&mut self, rel: &str) {
         if workspace::is_note_path(Path::new(rel)) {
             let events = self.refresh(&[self.root().join(rel)]);
-            self.broadcast(&events);
-            self.unseen.extend(events);
+            self.announce(events);
         }
     }
 
@@ -910,11 +922,10 @@ impl Core {
     /// Subscribers get what went wrong reading an owned file and what one leaves out, if that is
     /// news, then `Rescanned`; the next `poll` returns the first.
     pub fn rescan_now(&mut self) {
-        if let Ok(v) = workspace::scan(&self.index.workspace.root) {
+        if let Ok(v) = self.scan() {
             let reports = self.rescanned(v);
-            self.broadcast(&reports);
+            self.announce(reports);
             self.broadcast(&[Event::Rescanned]);
-            self.unseen.extend(reports);
         }
     }
 
@@ -936,7 +947,7 @@ impl Core {
         let mut events: Vec<Event> = Vec::new();
         if std::mem::take(&mut self.rescan) {
             self.changed.clear();
-            match workspace::scan(self.root()) {
+            match self.scan() {
                 Ok(v) => events.extend(self.rescanned(v)),
                 Err(_) => return unseen, // the folder vanished; keep what we had
             }
@@ -1226,6 +1237,50 @@ mod tests {
         all
     }
 
+    /// Two cores open at once on one folder, each with its own settings, each read with its
+    /// own: nothing a frontend configures is the process's (#180).
+    #[test]
+    fn two_cores_read_one_folder_each_with_what_it_was_given() {
+        let dir = std::env::temp_dir().join(format!("cold-lava-two-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Todo.md"), "- [ ] Pour\n").unwrap();
+        let with = |flavour: &str, links| {
+            let configured = Configured {
+                flavour: crate::markdown::Flavour::built_in(flavour),
+                style: crate::style::Overrides {
+                    links: Some(links),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            Core::open(&dir, Arc::new(configured)).unwrap()
+        };
+        use crate::style::LinkSyntax::{Markdown, Wiki};
+        let (github, commonmark) = (with("github", Markdown), with("commonmark", Wiki));
+        let read = |core: &Core| {
+            let v = &core.index.workspace;
+            let kinds: Vec<String> = (v.items(&v.notes[0]).iter())
+                .map(|i| i.data.kind().to_string())
+                .collect();
+            (
+                v.item_settings().flavour.name.clone(),
+                kinds,
+                v.style().links.value,
+            )
+        };
+        assert_eq!(
+            read(&github),
+            ("github".into(), vec!["task".into()], Markdown)
+        );
+        assert_eq!(
+            read(&commonmark),
+            ("commonmark".into(), vec!["list".into()], Wiki),
+            "a task list is GitHub's, not CommonMark's"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn emits_events_for_outside_changes() {
         let dir = std::env::temp_dir().join(format!("cold-lava-core-{}", std::process::id()));
@@ -1233,7 +1288,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("Sub")).unwrap();
         std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
         std::fs::write(dir.join("A.md"), "[[B]]").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let rx = core.subscribe();
         let root = core.root().to_path_buf();
 
@@ -1297,7 +1352,7 @@ mod tests {
         for at in ["Con", "Linked"] {
             std::os::unix::fs::symlink(dir.join("Concepts"), dir.join(at)).unwrap();
         }
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         if core.is_live() {
             let lava = Event::NoteChanged("Concepts/Lava".into());
             std::fs::write(dir.join("Concepts/Lava.md"), "- [ ] Measure the lava\n").unwrap();
@@ -1334,7 +1389,7 @@ mod tests {
             std::fs::create_dir_all(dir.join("w")).unwrap();
             std::fs::write(dir.join("w/A.md"), "hi\n").unwrap();
             std::os::unix::fs::symlink(link, dir.join("w/.obsidian")).unwrap();
-            let mut core = Core::open(&dir.join("w")).unwrap();
+            let mut core = Core::open(&dir.join("w"), Default::default()).unwrap();
             if core.is_live() {
                 let settings = dir.join(settings);
                 std::fs::write(settings.join("Stray.md"), "a note only inside\n").unwrap();
@@ -1384,7 +1439,7 @@ mod tests {
             }]
         };
         let cache = dir.join("cache");
-        let mut core = Core::open(&dir.join("w")).unwrap();
+        let mut core = Core::open(&dir.join("w"), Default::default()).unwrap();
         core.set_owners(kinds(), Some(&cache));
         let unread: Vec<(&str, &str)> = core.unread().collect();
         assert_eq!(unread, [("csv-table", "Eruptions.csv")]);
@@ -1488,7 +1543,7 @@ mod tests {
         );
 
         // Opened again, with nothing to ask: what it gave comes from the cache.
-        let mut again = Core::open(&dir.join("w")).unwrap();
+        let mut again = Core::open(&dir.join("w"), Default::default()).unwrap();
         again.set_owners(kinds(), Some(&cache));
         assert!(again.take_reads().is_empty());
         assert_eq!(query(&again, "task").len(), 1);
@@ -1559,7 +1614,7 @@ mod tests {
         };
         let open = "- [ ] Read the report 📅 2026-11-20";
         std::fs::write(dir.join("Eruptions.csv"), csv("6", open)).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let kind = OwnedKind {
             extension: "csv".into(),
             owner: "csv-table".into(),
@@ -1728,7 +1783,7 @@ mod tests {
         let csv = |to: &str, link: &str| format!("{};{link}\n", piece(to));
         let csv_now = || std::fs::read_to_string(dir.join("Eruptions.csv")).unwrap();
         std::fs::write(dir.join("Eruptions.csv"), csv("Krakatoa", "Tambora")).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let kind = OwnedKind {
             extension: "csv".into(),
             owner: "csv-table".into(),
@@ -1857,7 +1912,7 @@ mod tests {
         };
         let csv = |tag: &str| format!("- [ ] sample #{tag}/ash\n");
         std::fs::write(dir.join("Samples.csv"), csv("lava")).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let kind = OwnedKind {
             extension: "csv".into(),
             owner: "csv-table".into(),
@@ -1933,7 +1988,7 @@ mod tests {
                 .unwrap()
         };
         std::fs::write(ws.join("Eruptions.csv"), "Krakatoa\n").unwrap();
-        let mut core = Core::open(&ws).unwrap();
+        let mut core = Core::open(&ws, Default::default()).unwrap();
         let kind = OwnedKind {
             extension: "csv".into(),
             owner: "csv-table".into(),
@@ -2000,7 +2055,7 @@ mod tests {
         std::fs::write(dir.join("Magma.md"), "# Magma\n").unwrap();
         let canvas = "{\n\t\"nodes\":[\n\t\t{\"id\":\"s\",\"type\":\"text\",\"text\":\"Masks\\n- [ ] Two each, see [[Magma]]\",\"x\":0,\"y\":0,\"width\":1,\"height\":1,\"cold-lava\":{\"shape\":\"sticky\",\"node\":\"text\"}},\n\t\t{\"id\":\"c\",\"type\":\"file\",\"file\":\"Lava.md\",\"x\":0,\"y\":0,\"width\":1,\"height\":1}\n\t],\n\t\"edges\":[{\"id\":\"e\",\"fromNode\":\"s\",\"toNode\":\"c\"}],\n\t\"mine\": 1\n}\n";
         std::fs::write(dir.join("Board.canvas"), canvas).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let tasks = |core: &Core| {
             let select = Select {
                 kind: "task".into(),
@@ -2154,7 +2209,7 @@ mod tests {
             ],\"edges\":[{\"id\":\"e\",\"fromNode\":\"a\",\"toNode\":\"b\",\"label\":\"needs\"},\
             {\"id\":\"f\",\"fromNode\":\"a\",\"toNode\":\"g\"}]}\n";
         std::fs::write(dir.join("Board.canvas"), canvas).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let settings = core.index.workspace.item_settings();
         let file = &core.index.workspace.owned[0];
         assert_eq!(file.rel, "Board.canvas");
@@ -2263,7 +2318,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
         std::fs::create_dir_all(dir.join("Notes")).unwrap();
         std::fs::write(dir.join("Notes/Lava.md"), "v1").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let bin = dir.with_extension("bin");
         core.set_system_trash(Some(Bin::Freedesktop(bin.clone())));
         assert_eq!(core.kept_texts().kept, [], "none to begin with");

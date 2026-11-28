@@ -487,7 +487,7 @@ mod tests {
     fn the_permission_gate_holds_over_the_wire() {
         use Permission::{ItemsEdit, ItemsRead};
         let dir = workspace("gate");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let task = json!({"kind": "task"});
 
         let (none, _) = served(&mut core, &[], "items/query", task.clone());
@@ -525,7 +525,7 @@ mod tests {
         use Permission::{ItemsEdit, ItemsRead};
         let dir = workspace("anchor");
         let plan = dir.join("Plan.md");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let task = json!({"kind": "task"});
         let (found, _) = served(&mut core, &[ItemsRead], "items/query", task);
         let item = found.unwrap()["items"][0].clone();
@@ -549,7 +549,7 @@ mod tests {
         let dir = workspace("links");
         std::fs::write(dir.join("Plan.md"), "- [ ] Pay rent [[Rent]] [[Nowhere]]\n").unwrap();
         std::fs::write(dir.join("Rent.md"), "#money\n").unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let (none, _) = served(&mut core, &[], "links/query", json!(null));
         assert_eq!(reason(&none.unwrap_err()), "forbidden");
         let (graph, _) = served(&mut core, &[ItemsRead], "links/query", json!(null));
@@ -606,7 +606,7 @@ mod tests {
             r#"{"newLinkFormat": "relative"}"#,
         )
         .unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let (style, _) = served(
             &mut core,
             &[Permission::ItemsRead],
@@ -681,7 +681,7 @@ mod tests {
     fn files_are_read_written_created_and_listed_over_the_wire() {
         use Permission::{FilesRead, FilesWrite};
         let dir = workspace("files");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let both = [FilesRead, FilesWrite];
         let plan = json!({"path": "Plan.md"});
         let (read, _) = served(&mut core, &both, "workspace/read", plan);
@@ -716,7 +716,7 @@ mod tests {
     fn files_are_deleted_and_restored_and_folders_made_over_the_wire() {
         use Permission::{FilesDelete, FilesRead, FilesWrite};
         let dir = workspace("trash");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let bin = dir.with_extension("bin");
         let _ = std::fs::remove_dir_all(&bin);
         let system = cold_lava_engine::trash::Bin::Freedesktop(bin.clone());
@@ -786,7 +786,7 @@ mod tests {
         std::fs::write(dir.join("Notes.md"), "kept\n").unwrap();
         let local = r#"{"trashOption": "local"}"#;
         std::fs::write(dir.join(".obsidian/app.json"), local).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let may = [FilesRead, FilesDelete];
         let mut delete = |name: &str, path: &str| {
             let at = json!({ "path": path });
@@ -846,7 +846,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, dir.join("LinkDir")).unwrap();
         let local = r#"{"trashOption": "local"}"#;
         std::fs::write(dir.join(".obsidian/app.json"), local).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let may = [FilesRead, FilesDelete];
         for spelling in ["LinkDir/", "LinkDir//", "LinkDir"] {
             let at = json!({ "path": spelling });
@@ -878,7 +878,7 @@ mod tests {
     #[test]
     fn bad_requests_are_json_rpc_errors() {
         let dir = workspace("bad");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let read = [Permission::ItemsRead];
         let op = json!({"id": "a", "rev": "b", "op": "set-status"});
         let (e, _) = served(&mut core, &read, "items/edit", op);
@@ -899,7 +899,7 @@ mod tests {
     #[test]
     fn host_methods_queue_effects() {
         let dir = workspace("effects");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let (ok, effects) = served(&mut core, &[], "ui/notify", json!({"message": "hi"}));
         assert_eq!(ok, Ok(Value::Null));
         assert_eq!(
@@ -938,7 +938,7 @@ mod tests {
         let dir = workspace("open");
         std::fs::write(dir.join(".obsidian/graph.json"), "{}\n").unwrap();
         std::fs::create_dir(dir.join("Inbox")).unwrap();
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let whole = core.root().join("Plan.md");
         for note in [json!("Plan.md/"), json!("Plan.md"), json!(whole)] {
             let (answer, effects) = served(&mut core, &[], "workspace/open", json!({"note": note}));
@@ -989,7 +989,7 @@ mod tests {
     fn views_open_update_close_and_show_over_the_wire() {
         use crate::view::{Content, MAX_ROWS, ViewId};
         let dir = workspace("views");
-        let mut core = Core::open(&dir).unwrap();
+        let mut core = Core::open(&dir, Default::default()).unwrap();
         let list = json!({"kind": "list", "title": "Open", "groups": []});
         let open = json!({"content": list, "select": "r1", "file": "Data/Eruptions.csv"});
         let (opened, effects) = served(&mut core, &[], "view/open", open);

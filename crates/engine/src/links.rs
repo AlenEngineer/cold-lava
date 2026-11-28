@@ -150,7 +150,7 @@ mod tests {
     }
 
     fn index(dir: &Path) -> Index {
-        Index::build(crate::workspace::scan(dir).unwrap())
+        Index::build(crate::workspace::scan(dir, Default::default()).unwrap())
     }
 
     #[test]
