@@ -1522,13 +1522,16 @@ impl Home {
 
     /// After the menu changed files through the core, which read them again inside the call:
     /// the tree, and what the core has to say of it. No rescan, so item subscribers hear the
-    /// change once, as the core told it.
+    /// change once, as the core told it. The tree is read once: by `sync_with_core` when the
+    /// core's news changes it, here when it doesn't (a create of what was already there).
     fn after_core_change(&mut self) {
         let Some(root) = self.root.clone() else {
             return;
         };
-        self.set_items(self.scan_tree(&root));
         let events = self.core.as_mut().map(Core::poll).unwrap_or_default();
+        if !self.changes_tree(&events) {
+            self.set_items(self.scan_tree(&root));
+        }
         self.sync_with_core(&events);
     }
 
@@ -2042,18 +2045,7 @@ impl Home {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let tree_changed = events.iter().any(|e| match e {
-            CoreEvent::FileChanged(rel) => self.registry.owner_of(rel).is_some(),
-            CoreEvent::NoteChanged(_)
-            | CoreEvent::OwnedChanged(_)
-            | CoreEvent::OwnerTrouble { .. }
-            | CoreEvent::OwnedLeavesOut { .. }
-            | CoreEvent::GraphSettingsChanged
-            | CoreEvent::ItemEdited { .. }
-            | CoreEvent::KeptChanged => false,
-            _ => true,
-        });
-        if tree_changed {
+        if self.changes_tree(events) {
             self.set_items(self.scan_tree(&root));
         }
         if let (Some(b), Some(core)) = (self.board.as_mut(), self.core.as_mut()) {
@@ -2123,6 +2115,21 @@ impl Home {
         self.previews_changed(events);
         self.deliver(Deliveries::new(&after_sync(events)));
         self.deliver_relinked();
+    }
+
+    /// Whether the core's `events` change what the note tree lists.
+    fn changes_tree(&self, events: &[CoreEvent]) -> bool {
+        events.iter().any(|e| match e {
+            CoreEvent::FileChanged(rel) => self.registry.owner_of(rel).is_some(),
+            CoreEvent::NoteChanged(_)
+            | CoreEvent::OwnedChanged(_)
+            | CoreEvent::OwnerTrouble { .. }
+            | CoreEvent::OwnedLeavesOut { .. }
+            | CoreEvent::GraphSettingsChanged
+            | CoreEvent::ItemEdited { .. }
+            | CoreEvent::KeptChanged => false,
+            _ => true,
+        })
     }
 
     /// The tree of the workspace at `root`, with the files extensions open.
@@ -4461,15 +4468,15 @@ impl Home {
         self.mode = Mode::Tidy(Box::new(view));
     }
 
-    /// Show the Tidy view again after the workspace changed under it: read the workspace now rather
-    /// than when the watcher reports it, so what was just deleted or created is gone at once.
-    fn show_tidy(&mut self, view: Box<TidyView>) {
-        let Some(core) = self.core.as_mut() else {
+    /// Show the Tidy view again after the menu changed the workspace under it. Every caller
+    /// read the change first (the core's news, or `reload_tree`), so the report is the index's
+    /// as it is now and what was just deleted or created is gone at once.
+    fn show_tidy(&mut self, mut view: Box<TidyView>) {
+        let Some(core) = self.core.as_ref() else {
             return;
         };
-        core.rescan_now();
+        view.update(crate::tidy::report(&core.index));
         self.mode = Mode::Tidy(view);
-        self.sync_with_core(&[CoreEvent::Rescanned]);
     }
 
     fn tidy_key(&mut self, k: KeyEvent) {

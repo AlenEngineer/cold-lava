@@ -698,13 +698,14 @@ frontend has. `crate::ext::…` names the host's items as before (`ext::Host`, `
   `restore_file`, `create_folder`), never `trash::delete`, `trash::restore` or
   `write::create_dir`, and makes new notes through `Core::create_file` (the new-note
   prompt, the switcher's create, a link followed to nowhere, tidy's create, `note.edit`),
-  never `write::create`. It doesn't rescan afterwards (`after_core_change`): the core read
-  what moved. `tests/one_door.rs` reads every file under `src/` and lists the engine
-  writes, the whole-workspace operations and the `std::fs` changes the app still makes
-  itself (#193), and what else still goes around the door (#270): reads of `core.index` (the
-  host's too), a workspace scanned or indexed beside the core, item and tag edits around
-  `Core::edit_item`, links read by a pattern, and what the built-in extensions use beyond
-  the gateway. The lists only shrink: a new use fails, and so does an entry that is gone
+  never `write::create`. It doesn't rescan afterwards (`after_core_change`, and Tidy shown
+  again, `show_tidy`): the core read what moved. Renames, merges, recipes, tag edits,
+  duplicates and the daily note still rescan (`reload_tree`, #270 B5). `tests/one_door.rs`
+  reads every file under `src/` and lists the engine writes, the whole-workspace
+  operations and the `std::fs` changes the app still makes itself (#193), and what else
+  still goes around the door (#270): reads of `core.index` (the host's too), a workspace
+  scanned or indexed beside the core, item and tag edits around `Core::edit_item`, links
+  read by a pattern, and what the built-in extensions use beyond the gateway. The lists only shrink: a new use fails, and so does an entry that is gone
   and still listed.
 - `palette.rs`, `outline.rs`: the menu's first overlays, each a module that owns what is typed
   and which row is chosen, with `key` (giving its own `Action`) and `draw`. `Palette` runs a
