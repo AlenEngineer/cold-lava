@@ -5429,11 +5429,9 @@ impl Home {
         // A note that isn't there yet is new: it goes only where a new note may. One that is
         // there may have a name a new one couldn't (`#` in it).
         match files::new_path(&root, note) {
-            Ok(new) => match self.create_file(&new, "") {
-                Ok(()) => {}
-                Err(e) if e.reason == Reason::Exists => {}
-                Err(e) => return Err(e.message),
-            },
+            Ok(new) => {
+                self.create_unless_there(&new, "").map_err(|e| e.message)?;
+            }
             Err(e) if !path.is_file() => return Err(e.message),
             Err(_) => {}
         }
@@ -5568,21 +5566,34 @@ impl Home {
             }
         };
         let rel = new.rel();
-        match self.create_file(&new, "") {
-            Ok(()) => {}
-            Err(e) if e.reason == Reason::Exists => {}
+        match self.create_unless_there(&new, "") {
+            Ok(true) => self.flash(format!("created {rel}")),
+            Ok(false) => self.flash(format!("{rel} was already there")),
             Err(e) => {
                 self.flash(format!("couldn't create {rel}: {e}"));
                 return None;
             }
         }
-        self.flash(format!("created {rel}"));
         self.after_core_change();
         Some(new.path().to_path_buf())
     }
 
+    /// `create_file`, but a file already at `new` is no refusal: whether it was made.
+    fn create_unless_there(
+        &mut self,
+        new: &files::NewPath,
+        text: &str,
+    ) -> Result<bool, crate::gateway::Error> {
+        match self.create_file(new, text) {
+            Ok(()) => Ok(true),
+            Err(e) if e.reason == Reason::Exists => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Make the file at `new` holding `text`, through the core, which reads it at once.
-    /// Refused as `Exists` when something is there.
+    /// Refused as `Exists` when something is there, and refused when `new` was checked in
+    /// another workspace than the core's.
     fn create_file(
         &mut self,
         new: &files::NewPath,
@@ -5594,6 +5605,12 @@ impl Home {
                 "no workspace is open",
             ));
         };
+        if new.path() != core.root().join(new.rel()) {
+            return Err(crate::gateway::Error::new(
+                Reason::Refused,
+                format!("{} isn't in the workspace open", new.rel()),
+            ));
+        }
         let at = files::NewFile::At {
             path: new.rel().to_string(),
         };
