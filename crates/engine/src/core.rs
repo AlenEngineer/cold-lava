@@ -2193,6 +2193,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Two other programs save a note while a client's save of it is under way, and one of
+    /// their texts can't be put back (#427): it is kept beside the note under a hidden name.
+    /// The core says so (`KeptChanged`) and lists it with the note it is for, a client reads
+    /// it by the name listed and puts it away to the trash, and then it is listed no more.
+    #[test]
+    fn a_text_kept_from_a_save_race_is_listed_read_and_put_away() {
+        let dir = std::env::temp_dir().join(format!("cold-lava-core-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(dir.join("Notes")).unwrap();
+        std::fs::write(dir.join("Notes/Lava.md"), "v1").unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let bin = dir.with_extension("bin");
+        core.set_system_trash(Some(Bin::Freedesktop(bin.clone())));
+        assert_eq!(core.kept_texts().kept, [], "none to begin with");
+        let note = core.root().join("Notes/Lava.md");
+        let read = core.read_file("Notes/Lava.md").unwrap();
+        let (theirs, third) = (note.clone(), note.clone());
+        crate::write::lands::in_replace(
+            0,
+            move || {
+                let other = theirs.with_file_name("theirs.tmp");
+                std::fs::write(&other, "theirs").unwrap();
+                std::fs::rename(&other, &theirs).unwrap();
+            },
+            move |round| {
+                if round == 0 {
+                    std::fs::write(&third, "third").unwrap();
+                }
+            },
+        );
+        let refused = core
+            .write_file("Notes/Lava.md", "ours", &read.rev)
+            .unwrap_err();
+        assert_eq!(refused.reason, Reason::Kept, "{refused}");
+        let heard = wait_for(&mut core, |e| e.contains(&Event::KeptChanged));
+        assert!(heard.contains(&Event::KeptChanged) || heard.contains(&Event::Rescanned));
+        let listed = core.kept_texts().kept;
+        let [kept] = listed.as_slice() else {
+            panic!("one kept text: {listed:?}");
+        };
+        assert_eq!(kept.path, "Notes/Lava.md");
+        assert!(
+            kept.kept.starts_with("Notes/.Lava.cold-lava-kept-"),
+            "{kept:?}"
+        );
+        assert!(
+            refused.message.contains(&kept.kept),
+            "{refused} names {kept:?}"
+        );
+        let text = core.read_file(&kept.kept).unwrap();
+        assert_eq!(text.text, "theirs");
+        assert_eq!(text.rev, kept.rev);
+        assert_eq!(read(&note), "third");
+        core.delete_file("menu", &kept.kept, &kept.rev).unwrap();
+        assert_eq!(core.kept_texts().kept, [], "put away");
+        assert!(core.poll().contains(&Event::KeptChanged));
+        let trashed = std::fs::read_dir(bin.join("files")).unwrap().count();
+        assert_eq!(trashed, 1, "in the trash, not removed");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&bin);
+    }
+
     /// The first task of the first owned file.
     fn file_task(core: &Core) -> Item {
         let items = core.index.workspace.owned[0].items.iter();

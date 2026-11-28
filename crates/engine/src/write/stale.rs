@@ -265,6 +265,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// A save killed after it moved the note aside (where files can't be swapped, `aside`)
+    /// leaves the note's only text under the staged name, and nothing at the note's path
+    /// (#427): the sweep puts it back there, never under a kept name.
+    #[test]
+    fn a_staged_file_that_is_a_notes_only_text_goes_back_to_its_path() {
+        let d = dir("only");
+        let staged = format!(".N.md.cold-lava-{}-0.tmp", dead());
+        leave(&d, &staged, "the only text", Duration::from_secs(600));
+        assert_eq!(clear(&d, lock::WAIT, Duration::ZERO), Swept::Done);
+        assert_eq!(files(&d), ["N.md"]);
+        assert_eq!(std::fs::read(d.join("N.md")).unwrap(), b"the only text");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// A leftover named for a pipe (or anything not a regular file of its length) is kept,
     /// and the pipe is never read: a read with no writer would never return.
     #[test]
