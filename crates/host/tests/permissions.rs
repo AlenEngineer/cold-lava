@@ -642,7 +642,6 @@ fn workspace_open_is_refused_a_path_the_gateway_refuses() {
         ".obsidian/graph.json",
         "Concepts/../.git/config",
         "/etc/hostname",
-        "Concepts",
     ] {
         assert_eq!(
             open(&mut r, &mut core, note),
@@ -656,6 +655,8 @@ fn workspace_open_is_refused_a_path_the_gateway_refuses() {
             "{note} isn't read either"
         );
     }
+    let folder = open(&mut r, &mut core, "Concepts");
+    assert_eq!(folder, Err(Reason::Refused), "a folder isn't a note");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
