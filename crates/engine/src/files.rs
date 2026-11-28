@@ -472,45 +472,42 @@ pub fn replace(root: &Path, rel: &str, text: &str, expect: &str) -> Result<Writt
     })
 }
 
-/// `workspace/create`, through `write::create`.
+/// `workspace/create`, through `write::create`, at a `NewPath`.
 pub fn create(index: &Index, c: &Create) -> Result<Created, Error> {
     let root = &index.workspace.root;
-    let rel = match &c.at {
-        NewFile::At { path } => normal(path)?,
+    let new = match &c.at {
+        NewFile::At { path } => new_path(root, path)?,
         NewFile::Named { name, extension } => {
             let bad = extension.is_empty() || extension.contains(['/', '.', '\\']);
             if bad || name.trim().is_empty() {
                 let message = format!("{name:?} with extension {extension:?} can't name a file");
                 return Err(Error::new(Reason::Refused, message));
             }
-            free_name(index, name.trim(), extension)
+            free_name(index, name.trim(), extension)?
         }
     };
-    let path = resolve(root, &rel)?;
-    write::create(&path, c.text.as_bytes()).map_err(written(root, &rel))?;
+    let rel = new.rel();
+    write::create(new.path(), c.text.as_bytes()).map_err(written(root, rel))?;
     Ok(Created {
-        path: rel,
+        path: rel.to_string(),
         rev: rev(c.text.as_bytes()),
     })
 }
 
-/// Where a new `name.extension` goes, as workspace-relative path: the first of `name`,
-/// `name 1`, `name 2`, … that is free, as Obsidian numbers a new file.
-fn free_name(index: &Index, name: &str, extension: &str) -> String {
-    let root = &index.workspace.root;
-    let relative = |p: PathBuf| {
-        let rel = p.strip_prefix(root).map(Path::to_path_buf).unwrap_or(p);
-        rel.to_string_lossy().replace('\\', "/")
-    };
+/// Where a new `name.extension` goes: the first of `name`, `name 1`, `name 2`, … that is
+/// free, as Obsidian numbers a new file. Each is checked (`new_file`) before it is asked
+/// whether something is there, so a refusal never tells what is outside the workspace.
+fn free_name(index: &Index, name: &str, extension: &str) -> Result<NewPath, Error> {
     let mut n = 0;
     loop {
         let candidate = match n {
             0 => name.to_string(),
             n => format!("{name} {n}"),
         };
-        let path = crate::resolver::new_file_path(index, &candidate, extension, None);
-        if !write::taken(&path) {
-            return relative(path);
+        let rel = new_file_rel(index, &candidate, extension, None)?;
+        // Something at the candidate itself, a link included, only takes the number.
+        if !write::taken(&new_entry(&index.workspace.root, &rel)?) {
+            return new_path(&index.workspace.root, &rel);
         }
         n += 1;
     }
@@ -643,21 +640,59 @@ pub fn new_path(root: &Path, rel: &str) -> Result<NewPath, Error> {
     Ok(NewPath { rel, path })
 }
 
-/// Where a new note named `name` goes (`resolver::new_note_path`: the folder its name names,
-/// else Obsidian's new-note location), as a `NewPath`. A name that leads out of the workspace
-/// (`..`, an absolute path) is refused.
+/// `new_path`'s checks but the last: the entry at `rel` itself may be a symlink.
+fn new_entry(root: &Path, rel: &str) -> Result<PathBuf, Error> {
+    let rel = normal(rel)?;
+    crate::rename::check_path(&rel).map_err(|e| Error::new(Reason::Refused, e.to_string()))?;
+    resolve_entry(root, &rel)
+}
+
+/// Where a new note named `name` goes, as a `NewPath` (`new_file`).
 pub fn new_note(index: &Index, name: &str, from: Option<usize>) -> Result<NewPath, Error> {
+    new_file(index, name.trim().trim_end_matches(".md"), "md", from)
+}
+
+/// Where a new `name.extension` goes (`resolver::new_file_path`: the folder its name names,
+/// else Obsidian's location for new files), as a `NewPath`. A name that leads out of the
+/// workspace (`..`, an absolute path) is refused, and so is Obsidian's folder for new files
+/// when it would, naming the setting. `\` is part of a name, as the new-note prompt reads it.
+pub fn new_file(
+    index: &Index,
+    name: &str,
+    extension: &str,
+    from: Option<usize>,
+) -> Result<NewPath, Error> {
+    let rel = new_file_rel(index, name, extension, from)?;
+    new_path(&index.workspace.root, &rel)
+}
+
+/// `new_file`'s path, relative to the workspace, before `new_path` checks it.
+fn new_file_rel(
+    index: &Index,
+    name: &str,
+    extension: &str,
+    from: Option<usize>,
+) -> Result<String, Error> {
     let root = &index.workspace.root;
-    let path = crate::resolver::new_note_path(index, name, from);
-    let rel = path.strip_prefix(root).ok().and_then(Path::to_str);
-    let Some(rel) = rel else {
-        let message = format!(
-            "{}: a path relative to the workspace is needed",
-            name.trim()
-        );
-        return Err(Error::new(Reason::Refused, message));
+    if let Some(folder) = crate::resolver::new_file_folder(index, name)
+        && !folder.is_empty()
+    {
+        new_path(root, &folder).map_err(|e| {
+            let message = format!(
+                "the folder for new files (newFileFolderPath) in .obsidian/app.json is refused: {}",
+                e.message
+            );
+            Error::new(Reason::Refused, message)
+        })?;
+    }
+    let path = crate::resolver::new_file_path(index, name, extension, from);
+    let rel = match (path.parent(), path.file_name()) {
+        (Some(folder), Some(file)) => {
+            crate::resolver::join(&rel_path::or_whole(root, folder), &file.to_string_lossy())
+        }
+        _ => rel_path::or_whole(root, &path),
     };
-    new_path(root, &rel.replace('\\', "/"))
+    Ok(rel)
 }
 
 /// How many deletes of one client the core keeps tokens for.
@@ -1447,6 +1482,11 @@ mod tests {
         );
         assert_eq!(new_note(ix, " Idea.md ", None).unwrap().rel(), "Idea.md");
         assert_eq!(
+            new_note(ix, "Data/a\\b", None).unwrap().rel(),
+            "Data/a\\b.md",
+            "a backslash is part of a name, as the new-note prompt reads it"
+        );
+        assert_eq!(
             names(&outside),
             Vec::<String>::new(),
             "nothing went outside"
@@ -1629,6 +1669,104 @@ mod tests {
         let link = std::fs::read_link(dir.join("Untitled.csv")).unwrap();
         assert_eq!(link, Path::new("Gone.csv"), "the link stays");
         assert!(!dir.join("Gone.csv").exists(), "nothing made through it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn named(name: &str) -> Create {
+        Create {
+            at: NewFile::Named {
+                name: name.into(),
+                extension: "csv".into(),
+            },
+            text: "a,b\n".into(),
+        }
+    }
+
+    /// `workspace/create` takes the one rule for where a new file goes (`new_path`, #422), at
+    /// a path and by name alike: a name links couldn't point to is refused, and so is one
+    /// that leads out of the workspace.
+    #[test]
+    fn a_created_file_goes_only_where_a_new_file_may() {
+        let dir = workspace("create-rule");
+        let mut core = Core::open(&dir).unwrap();
+        for path in [
+            "Data/a#b.csv",
+            "Data/[x].csv",
+            "a|b.csv",
+            "a^b.csv",
+            "../x.csv",
+        ] {
+            let at = Create {
+                at: NewFile::At { path: path.into() },
+                text: String::new(),
+            };
+            let refused = core.create_file(&at).unwrap_err();
+            assert_eq!(refused.reason, Reason::Refused, "at {path}");
+        }
+        for name in ["a#b", "Data/[x]", "../x", "Data/../../x"] {
+            let refused = core.create_file(&named(name)).unwrap_err();
+            assert_eq!(refused.reason, Reason::Refused, "named {name}");
+        }
+        assert_eq!(core.files("csv").files, ["Data/Eruptions.csv"]);
+        let made = core.create_file(&named("Data/Field")).unwrap();
+        assert_eq!(made.path, "Data/Field.csv");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A create by name checks each name before it asks whether a file is there (#422), so
+    /// its refusal names the first name whatever is outside the workspace: it never tells an
+    /// extension which files are there.
+    #[cfg(unix)]
+    #[test]
+    fn a_create_by_name_tells_nothing_of_what_is_outside() {
+        let dir = workspace("create-outside");
+        let outside = dir.with_extension("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Secret.csv"), "x\n").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("Data/Alias")).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let beside = outside.file_name().unwrap().to_string_lossy().into_owned();
+        for name in ["Secret", "Missing"] {
+            for through in [format!("Data/Alias/{name}"), format!("../{beside}/{name}")] {
+                let refused = core.create_file(&named(&through)).unwrap_err();
+                assert_eq!(refused.reason, Reason::Refused, "{through}");
+                let first = format!("{through}.csv: ");
+                assert!(refused.message.starts_with(&first), "{}", refused.message);
+            }
+        }
+        assert_eq!(names(&outside), ["Secret.csv"], "nothing went outside");
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Obsidian's folder for new files (`newFileFolderPath` in `.obsidian/app.json`) is
+    /// another program's setting: one that leads out of the workspace is refused, naming the
+    /// setting, for a new note and a created file alike (#422).
+    #[test]
+    fn a_new_file_folder_out_of_the_workspace_is_refused_naming_the_setting() {
+        let dir = workspace("new-file-folder");
+        let app = r#"{"newFileLocation": "folder", "newFileFolderPath": "../Elsewhere"}"#;
+        std::fs::write(dir.join(".obsidian/app.json"), app).unwrap();
+        let mut core = Core::open(&dir).unwrap();
+        let note = new_note(&core.index, "Idea", None).unwrap_err();
+        assert_eq!(note.reason, Reason::Refused);
+        assert!(
+            note.message.contains("newFileFolderPath"),
+            "{}",
+            note.message
+        );
+        let file = core.create_file(&named("Untitled")).unwrap_err();
+        assert!(
+            file.message.contains("newFileFolderPath"),
+            "{}",
+            file.message
+        );
+        assert_eq!(
+            new_note(&core.index, "Data/Idea", None).unwrap().rel(),
+            "Data/Idea.md",
+            "a name with a folder goes there, not to the setting's"
+        );
+        assert!(!dir.with_file_name("Elsewhere").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

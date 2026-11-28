@@ -226,14 +226,27 @@ fn target_path(old_rel: &str, new: &str) -> Result<String> {
     Ok(rel)
 }
 
-/// A path a note or folder can have: inside the workspace, not hidden, and one links can name.
+/// A path a note or folder can have: inside the workspace, not hidden (`check_spelling`), and
+/// one links can name (`check_name`).
 pub fn check_path(rel: &str) -> Result<()> {
+    check_spelling(rel)?;
+    check_name(rel)
+}
+
+/// A path inside the workspace in its one spelling: no empty, `.`, `..` or hidden part. What
+/// moves needs only this: a name it already has may hold what a new name can't.
+fn check_spelling(rel: &str) -> Result<()> {
     if rel
         .split('/')
         .any(|c| c.is_empty() || c == "." || c == ".." || c.starts_with('.'))
     {
         bail!("not a valid path inside the workspace: {rel}");
     }
+    Ok(())
+}
+
+/// A name links can point to: none of `[ ] | # ^`. Where something lands needs it.
+fn check_name(rel: &str) -> Result<()> {
     if rel
         .chars()
         .any(|c| matches!(c, '[' | ']' | '|' | '#' | '^'))
@@ -261,6 +274,7 @@ pub fn plan(ix: &Index, note: usize, new_rel: &str) -> Result<Plan> {
     } else {
         format!("{new_rel}.md")
     };
+    check_path(&new_rel)?;
     if new_rel == from_rel {
         bail!("that's already its name");
     }
@@ -312,11 +326,10 @@ pub fn plan_into(ix: &Index, items: &[String], folder: &str) -> Result<Plan> {
     let mut moves = Vec::new();
     for rel in items {
         let rel = rel.trim_matches('/');
+        check_source(rel)?;
         let from_path = root.join(rel);
         let is_dir = from_path.is_dir();
-        if is_dir {
-            check_folder(ix, rel)?;
-        } else if !from_path.is_file() {
+        if !is_dir && !from_path.is_file() {
             bail!("{rel} is no longer there");
         }
         let name = rel.rsplit('/').next().unwrap_or(rel);
@@ -324,6 +337,7 @@ pub fn plan_into(ix: &Index, items: &[String], folder: &str) -> Result<Plan> {
         if to == rel {
             continue;
         }
+        check_path(&to)?;
         moves.push(Move {
             from: rel.to_string(),
             folder: is_dir,
@@ -345,14 +359,18 @@ pub fn plan_into(ix: &Index, items: &[String], folder: &str) -> Result<Plan> {
     resolve(ix, moves)
 }
 
-/// A folder cold-lava may move.
-fn check_folder(ix: &Index, from: &str) -> Result<()> {
+/// Something cold-lava may move: a path in the workspace other than its root, in its one
+/// spelling (`check_spelling`).
+fn check_source(from: &str) -> Result<()> {
     if from.is_empty() {
         bail!("that's the workspace itself");
     }
-    if from.split('/').any(|c| c.starts_with('.')) {
-        bail!("{from} is a hidden folder; cold-lava leaves it alone");
-    }
+    check_spelling(from)
+}
+
+/// A folder cold-lava may move.
+fn check_folder(ix: &Index, from: &str) -> Result<()> {
+    check_source(from)?;
     if !ix.workspace.root.join(from).is_dir() {
         bail!("there's no folder {from}");
     }
@@ -1531,6 +1549,83 @@ mod tests {
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// #452: the plan checks what moves as it checks where it lands (`check_path`), so no
+    /// caller has to. A source outside the workspace, in a hidden folder, or in a spelling
+    /// other than its own (`Notes//Lava.md` would move `Notes/Lava.md` and leave the links
+    /// to it unrewritten) is refused, and nothing is looked up at it. A folder's move
+    /// (`plan_folder`) checks its source the same way.
+    #[test]
+    fn a_source_that_is_not_a_workspace_path_is_refused() {
+        let files = [
+            ("Rocky.md", "[[Notes/Lava]]\n"),
+            ("Notes/Lava.md", "hot"),
+            ("Notes/Sub/Pumice.md", "light"),
+            (".hidden/Ash.md", "fine"),
+        ];
+        let (dir, ix) = workspace_with("from-path", &files);
+        let outside = dir.with_extension("outside.md");
+        std::fs::write(&outside, "far").unwrap();
+        let outside_rel = format!("../{}", outside.file_name().unwrap().to_str().unwrap());
+        for from in [
+            "Notes//Lava.md",
+            "Notes/./Lava.md",
+            ".hidden/Ash.md",
+            outside_rel.as_str(),
+        ] {
+            let refused = plan_into(&ix, &[from.to_string()], "Archive").unwrap_err();
+            assert_eq!(
+                refused.to_string(),
+                format!("not a valid path inside the workspace: {from}")
+            );
+        }
+        assert_eq!(
+            plan_folder(&ix, "Notes//Sub", "Archive")
+                .unwrap_err()
+                .to_string(),
+            "not a valid path inside the workspace: Notes//Sub"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// A name links can't point to (`[ ] | # ^`) is refused where something lands, never where
+    /// it comes from: another program may have made `C# notes`, and a move is the way out of
+    /// it. A marked move keeps the name, so it lands with it and is refused.
+    #[test]
+    fn a_source_may_have_a_name_links_cannot_point_to() {
+        let files = [
+            ("C# notes/Topic.md", "t"),
+            ("Draft [old]/D.md", "d"),
+            ("C#.md", "c"),
+            ("Hash #2.md", "h"),
+            (
+                "Rocky.md",
+                "[cs](<C%23 notes/Topic.md>) [h](<Hash %232.md>)\n",
+            ),
+        ];
+        let (dir, ix) = workspace_with("from-name", &files);
+        apply(&plan_folder(&ix, "C# notes", "CSharp").unwrap(), &dir).unwrap();
+        assert!(read(&dir, "Rocky.md").starts_with("[cs](<CSharp/Topic.md>) "));
+        let ix = Index::build(workspace::scan(&dir).unwrap());
+        apply(&plan_folder(&ix, "Draft [old]", "Draft").unwrap(), &dir).unwrap();
+        assert!(dir.join("Draft/D.md").is_file());
+        let ix = Index::build(workspace::scan(&dir).unwrap());
+        apply(
+            &plan(&ix, ix.by_rel("C#").unwrap(), "CSharp").unwrap(),
+            &dir,
+        )
+        .unwrap();
+        assert!(dir.join("CSharp.md").is_file() && !dir.join("C#.md").exists());
+        let ix = Index::build(workspace::scan(&dir).unwrap());
+        assert_eq!(
+            plan_into(&ix, &["Hash #2.md".to_string()], "CSharp")
+                .unwrap_err()
+                .to_string(),
+            "names can't contain [ ] | # or ^ (links couldn't point to them)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #397, the source side: what moves can't be reached through a symlinked folder either,

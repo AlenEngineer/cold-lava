@@ -234,8 +234,8 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
 - `resolver.rs`: the link resolver, both directions, with Obsidian's rules (path, then name,
   shallowest wins; attachments beside the note; `./` and `../`). Resolve: `Resolver` (the
   index's), `Files::resolve`, `split_link`, `attachment`, `file`. Write: `Files::write` in a
-  `Style`, `Rewriter` (renames and merges), `new_note_path`/`new_file_path` (the engine's own:
-  a frontend asks `files::new_note`). Don't write another
+  `Style`, `Rewriter` (renames and merges), `new_file_path` (the engine's own: a frontend
+  asks `files::new_note` or `files::new_file`). Don't write another
   link resolver: ask this one (docs/extensions.md, "Link resolver").
 - `style.rs`: the workspace's style (how its notes are written). The Markdown owner counts link
   syntax as it reads (`Read::written`); `count_with()` counts the rest of a note the first time
@@ -511,9 +511,13 @@ A Cargo workspace of six crates. The version lives in the root `Cargo.toml` unde
   (`names_kept`), never its suffix's owner.
   `new_path` is the one check of where a new file or folder goes (`normal`, then
   `rename::check_path`, then `resolve`: inside the workspace, no symlink on the way), and a
-  `NewPath` only it makes: `create-folder`, the menu's new note, the switcher's, a link
-  followed to nowhere and tidy's create (`files::new_note`, over `resolver::new_note_path`)
-  write only at one (#411, #421). `stat` and `delete` take a symlink as the entry itself, and the link is what goes; no
+  `NewPath` only it makes: `workspace/create`, `create-folder`, the menu's new note, the
+  board picker's new board, `note.edit` of a note not there yet, and the switcher's create, a
+  link followed to nowhere and tidy's create (one `Home::create_named_note`, through
+  `files::new_note`), write only at one (#411, #421, #422). `files::new_file` names a new
+  `name.extension` (`resolver::new_file_path`), checking each candidate before it asks
+  whether one is there, and refuses Obsidian's `newFileFolderPath` naming it.
+  `write::create` and `create_if_missing` themselves still take any path, until #448. `stat` and `delete` take a symlink as the entry itself, and the link is what goes; no
   folder on the way to it may be one (`resolve_entry`). A
   frontend that drops a core carries its own deletes to the next one with `Core::take_trashed` /
   `keep_trashed`. The core reads what moved at once and emits `Event::Deleted`, `Restored` or
